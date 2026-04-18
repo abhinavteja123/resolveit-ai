@@ -1,0 +1,100 @@
+## High CPU Usage — Server Runbook
+
+### Problem Description
+A server is experiencing abnormally high CPU utilization (consistently above 90%), causing slow response times, application timeouts, and degraded service performance for end users.
+
+### Symptoms
+- `top` or `htop` shows CPU usage above 90% sustained
+- Load average exceeds number of CPU cores (e.g., load > 8 on an 8-core server)
+- Application response times increase significantly
+- Health check endpoints start timing out
+- Monitoring alerts for high CPU threshold
+
+### Diagnostic Steps
+
+1. **Identify the top CPU-consuming processes:**
+   ```bash
+   # Real-time:
+   top -o %CPU
+   # Snapshot sorted by CPU:
+   ps aux --sort=-%cpu | head -20
+   # Find which process is using the most:
+   pidstat -u 1 5
+   ```
+
+2. **Check the load average trend:**
+   ```bash
+   uptime
+   cat /proc/loadavg
+   # Historical:
+   sar -u 1 10
+   ```
+
+3. **Check if it's I/O wait (not CPU):**
+   ```bash
+   iostat -x 1 5
+   # High %iowait means disk bottleneck, not CPU
+   vmstat 1 5
+   ```
+
+4. **Profile the specific process:**
+   ```bash
+   # For a process with PID 1234:
+   strace -p 1234 -c   # Show system call breakdown
+   perf top -p 1234    # Show function-level CPU hotspots
+   ```
+
+### Resolution Steps
+
+1. **Kill runaway process (temporary fix):**
+   ```bash
+   kill -15 <PID>    # Graceful shutdown
+   kill -9 <PID>     # Force kill (last resort)
+   ```
+
+2. **Restart the affected service:**
+   ```bash
+   systemctl restart myapp
+   systemctl restart nginx
+   ```
+
+3. **If caused by a cron job or batch process — reschedule:**
+   ```bash
+   crontab -e
+   # Move heavy jobs to off-peak hours (e.g., 2 AM)
+   ```
+
+4. **For Java applications — check GC pressure:**
+   ```bash
+   jstat -gcutil <PID> 1000 10
+   # High GC time = memory issue, not just CPU
+   # Fix: increase heap size (see OOM runbook)
+   ```
+
+5. **Scale horizontally if consistently overloaded:**
+   ```bash
+   # Kubernetes:
+   kubectl scale deployment myapp --replicas=3
+   # Or enable HPA:
+   kubectl autoscale deployment myapp --min=2 --max=10 --cpu-percent=70
+   ```
+
+6. **Apply CPU limits to prevent one process from starving others:**
+   ```bash
+   # Linux cgroups (limit to 50% of one core):
+   systemd-run --scope -p CPUQuota=50% myprocess
+   # Docker:
+   docker update --cpus="1.5" container_name
+   ```
+
+### Escalation
+If CPU remains high after restart and no clear cause is found, escalate to the Development team with:
+- Output of `top` and `ps aux --sort=-%cpu | head -20`
+- Application profiling data
+- Timestamp when the issue started
+
+### Prevention
+- Set up CPU usage alerts at 80% for 5+ minutes
+- Configure auto-scaling policies
+- Implement request rate limiting to prevent overload
+- Schedule batch jobs during off-peak hours

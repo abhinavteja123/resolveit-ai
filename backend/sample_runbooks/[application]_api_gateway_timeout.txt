@@ -1,0 +1,69 @@
+## API Gateway 504 Timeout — Runbook
+
+### Problem Description
+An API gateway (NGINX, Kong, AWS API Gateway, or HAProxy) returns HTTP 504 Gateway Timeout to clients while upstream services log slow responses or nothing at all. Results in failing transactions, aborted mobile sessions, and elevated error rates.
+
+### Symptoms
+- Client receives `504 Gateway Timeout` after ~30–60 s wait
+- Gateway access logs: `upstream timed out (110: Connection timed out) while reading response header`
+- Upstream service P99 latency > configured gateway timeout
+- `/healthz` on upstream still returns 200 — only specific endpoints time out
+
+### Root Cause Analysis
+1. Upstream endpoint making a slow downstream call (DB, 3rd-party API)
+2. Long-running synchronous job that should be async (report generation, bulk export)
+3. Connection pool exhausted on the upstream server
+4. Keep-alive mismatch — gateway holds connection longer than upstream
+5. Network path jitter — packet retransmission on cross-AZ call
+
+### Resolution Steps
+1. **Identify the slow endpoint** from gateway logs:
+   ```
+   awk '$9==504 {print $7}' /var/log/nginx/access.log | sort | uniq -c | sort -rn | head
+   ```
+
+2. **Correlate with upstream traces** (APM tool) to find the bottleneck span.
+
+3. **Temporarily raise gateway timeout** for the affected route only — do NOT raise globally:
+   ```
+   # NGINX
+   location /slow-report {
+       proxy_read_timeout 120s;
+       proxy_send_timeout 120s;
+   }
+   nginx -t && nginx -s reload
+   ```
+
+4. **Check upstream thread / connection pool:**
+   - JVM: `jstack <pid>` → look for threads blocked on DB connections
+   - Node.js: `process._getActiveRequests().length`
+   - Python: `netstat -anp | grep <upstream-port> | wc -l`
+
+5. **Scale the upstream** if saturated:
+   ```
+   kubectl scale deployment api-service --replicas=<N>
+   ```
+
+6. **Move the slow work async** (code-level fix):
+   - Return 202 Accepted with a job ID
+   - Client polls / receives webhook on completion
+
+7. **Verify keep-alive settings** match:
+   ```
+   # NGINX upstream block
+   keepalive 64;
+   keepalive_timeout 60s;
+   # Upstream server must keep connections alive longer than the gateway
+   ```
+
+### Escalation
+Escalate to the Service Owner if the slow endpoint involves external third-party APIs or database queries that need schema / index changes. Include:
+- Top 10 slow URLs (last hour)
+- APM trace IDs for 3 sample slow requests
+- Gateway and upstream timeout config
+
+### Prevention
+- Enforce per-endpoint latency SLOs with alerts (P99 > threshold)
+- Add circuit breakers (Resilience4j / Polly) on synchronous downstream calls
+- Cap request handler wall-clock with a hard timeout
+- Prefer async job pattern for any operation > 5 s

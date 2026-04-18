@@ -1,0 +1,71 @@
+## VPN Connection Drops Intermittently — Runbook
+
+### Problem Description
+Users report that their corporate VPN (OpenVPN, WireGuard, or IPsec) disconnects every few minutes or fails to re-establish after brief network changes, forcing them to re-authenticate repeatedly.
+
+### Symptoms
+- Client logs show `TLS key negotiation failed` or `ping-restart`
+- Tunnel interface (`tun0` / `wg0`) comes up, transfers data for 1–10 min, then drops
+- `journalctl -u openvpn-client@corp` shows `Inactivity timeout (--ping-restart)`
+- Users on cellular or hotspots see far more drops than wired users
+
+### Root Cause Analysis
+1. MTU mismatch — packets larger than the path MTU get fragmented and dropped
+2. NAT keep-alive too long — carrier / ISP drops idle UDP mappings
+3. Client-side power-management putting the NIC to sleep
+4. Expired or misconfigured TLS certificates (full failure, not intermittent)
+5. VPN server overload — session timeout under CPU pressure
+
+### Resolution Steps
+1. **Collect client logs** and confirm the disconnect pattern (time-based vs traffic-based).
+   ```
+   journalctl -u openvpn-client@corp -f
+   wg show
+   ```
+
+2. **Reduce MTU** on the VPN interface to 1380 (covers most GRE/IPsec overhead):
+   ```
+   # OpenVPN client config
+   tun-mtu 1380
+   mssfix 1340
+   # WireGuard
+   ip link set dev wg0 mtu 1380
+   ```
+
+3. **Shorten keep-alive interval** so NAT mappings stay open:
+   ```
+   # OpenVPN
+   keepalive 10 60
+   # WireGuard (per-peer)
+   PersistentKeepalive = 25
+   ```
+
+4. **Disable Wi-Fi / NIC power saving (Windows / Linux):**
+   ```
+   # Linux
+   iwconfig wlan0 power off
+   # Windows (PowerShell, admin)
+   Get-NetAdapter | Set-NetAdapterPowerManagement -WakeOnMagicPacket Disabled
+   ```
+
+5. **Test from a different network** to isolate ISP issues. If a single ISP / carrier is the common factor, file a ticket with them citing UDP port <port> flows.
+
+6. **Check server-side capacity:**
+   ```
+   top -p $(pgrep openvpn)
+   ss -u -a | wc -l        # active UDP sessions
+   ```
+
+7. **Roll out a corrected client profile** via MDM / configuration management once validated on a pilot user group.
+
+### Escalation
+Escalate to Network Security if:
+- Server CPU / session count is near limits
+- Multiple sites report coordinated drops (suspect server or upstream)
+- TLS re-negotiation errors appear (certificate / CA chain issue)
+
+### Prevention
+- Set `PersistentKeepalive = 25` by default for all WireGuard peers
+- Pre-configure MTU 1380 in the client template
+- Monitor active session count and packet-loss between VPN hops
+- Health-check VPN concentrators from two external probes

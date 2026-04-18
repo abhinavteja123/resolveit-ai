@@ -1,0 +1,75 @@
+## Redis Connection Refused — Runbook
+
+### Problem Description
+Application services fail to connect to Redis, throwing `ECONNREFUSED`, `MaxRetriesPerRequestError`, or `CLUSTERDOWN`. Cache-dependent features (sessions, rate limits, queues) degrade or crash.
+
+### Symptoms
+- App logs: `Error: connect ECONNREFUSED 10.0.0.12:6379`
+- `redis-cli ping` returns `Could not connect to Redis`
+- In a cluster setup, `CLUSTER INFO` returns `cluster_state:fail`
+- Background job queues back up; P95 latency spikes
+
+### Root Cause Analysis
+1. Redis process has crashed (OOM-killed by Linux)
+2. `maxmemory` reached with `noeviction` policy → writes error out but connections may still close
+3. `protected-mode yes` with no `bind` / `requirepass` — Redis refuses remote connects
+4. Cluster failover in progress, clients using stale slots map
+5. TCP backlog exceeded under thundering-herd reconnect after a blip
+
+### Resolution Steps
+1. **Verify Redis is running:**
+   ```
+   systemctl status redis
+   ps -ef | grep redis-server
+   ```
+
+2. **Check the last-killed process log (OOM):**
+   ```
+   dmesg -T | grep -i "killed process.*redis"
+   journalctl -u redis -n 200
+   ```
+
+3. **Inspect memory and eviction:**
+   ```
+   redis-cli INFO memory | grep -E "used_memory_human|maxmemory_human|maxmemory_policy"
+   redis-cli CONFIG GET maxmemory-policy
+   ```
+   Switch to `allkeys-lru` if cache workload is safe to evict:
+   ```
+   redis-cli CONFIG SET maxmemory-policy allkeys-lru
+   ```
+
+4. **Check connectivity and auth:**
+   ```
+   redis-cli -h <host> -p 6379 -a <password> ping
+   ```
+   If `NOAUTH Authentication required.` appears, fix the client's auth string.
+
+5. **Cluster health:**
+   ```
+   redis-cli CLUSTER INFO
+   redis-cli CLUSTER NODES
+   ```
+   If a master is down, run `CLUSTER FAILOVER` on the replica.
+
+6. **Raise connection limits** if `maxclients` is exhausted:
+   ```
+   redis-cli CONFIG GET maxclients
+   redis-cli CONFIG SET maxclients 20000
+   # Linux TCP backlog
+   sysctl -w net.core.somaxconn=1024
+   ```
+
+7. **Restart safely** — for a single node, `systemctl restart redis`. For a cluster, fail over to a replica first to avoid data loss on an unclean restart.
+
+### Escalation
+Escalate to the Platform team if:
+- Persistent OOM despite `maxmemory` tuning (capacity issue)
+- Cluster in `fail` state with no healthy replicas
+- Repeated crashes with identical stack traces (likely a Redis bug)
+
+### Prevention
+- Set `maxmemory` to 70% of available RAM with an eviction policy
+- Monitor `evicted_keys`, `rejected_connections`, `used_memory_rss`
+- Enable AOF or RDB snapshots on a disk with adequate IOPS
+- Use connection pooling on clients; avoid per-request connect/disconnect

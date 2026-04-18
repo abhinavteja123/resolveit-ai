@@ -1,0 +1,74 @@
+## SSL Certificate Expired — Runbook
+
+### Problem Description
+Website or internal service is showing SSL/TLS certificate expired errors. Users cannot access the service securely and browsers show security warnings. Services may also refuse to communicate with each other if certificate validation fails.
+
+### Symptoms
+- Browser shows "Your connection is not private" or "ERR_CERT_DATE_INVALID"
+- `curl` returns: `SSL certificate problem: certificate has expired`
+- Monitoring alerts for certificate expiry
+- Service-to-service API calls fail with SSL handshake errors
+- OpenSSL check: `openssl s_client -connect host:443` shows "notAfter" in the past
+
+### Root Cause Analysis
+1. SSL certificate was not renewed before expiry
+2. Auto-renewal cron job (certbot) failed silently
+3. Certificate renewal succeeded but web server was not reloaded
+4. Wrong certificate installed (old certificate still being served)
+5. Load balancer / CDN has a cached old certificate
+
+### Resolution Steps
+
+1. **Check the current certificate expiry date:**
+   ```bash
+   echo | openssl s_client -connect yourdomain.com:443 2>/dev/null | openssl x509 -noout -dates
+   # Windows (PowerShell):
+   (New-Object Net.Http.HttpClient).GetAsync("https://yourdomain.com") | Out-Null
+   ```
+
+2. **Check if a valid certificate exists on disk but isn't loaded:**
+   ```bash
+   ls -la /etc/letsencrypt/live/yourdomain.com/
+   openssl x509 -in /etc/letsencrypt/live/yourdomain.com/fullchain.pem -noout -dates
+   ```
+
+3. **Renew Let's Encrypt certificate manually:**
+   ```bash
+   sudo certbot renew --force-renewal
+   # For specific domain:
+   sudo certbot certonly --standalone -d yourdomain.com
+   ```
+
+4. **Reload web server after certificate renewal:**
+   ```bash
+   sudo systemctl reload nginx
+   sudo systemctl reload apache2
+   ```
+
+5. **For self-signed internal certs — generate a new one:**
+   ```bash
+   openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem \
+     -days 365 -nodes -subj "/CN=internal.company.local"
+   ```
+
+6. **Verify certbot auto-renewal timer:**
+   ```bash
+   systemctl status certbot.timer
+   systemctl enable certbot.timer
+   # Test renew:
+   certbot renew --dry-run
+   ```
+
+7. **Check if load balancer needs certificate update:**
+   - AWS ALB: Certificate Manager → Request new → attach to listener
+   - Nginx proxy: update `ssl_certificate` and `ssl_certificate_key` paths
+
+### Escalation
+If certificate renewal fails repeatedly, escalate to the Security/Infrastructure team with:
+- Output of `certbot renew --dry-run`
+- DNS configuration (certbot may need DNS challenge)
+
+### Prevention
+- Set up certificate expiry monitoring (alert at 30 days)
+- Ensure certbot timer is enabled and running
+- Use wildcard certificates for subdomains to simplify management

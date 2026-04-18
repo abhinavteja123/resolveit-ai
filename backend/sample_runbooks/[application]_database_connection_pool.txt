@@ -1,0 +1,105 @@
+## Database Connection Pool Exhausted — Runbook
+
+### Problem Description
+The application is unable to obtain database connections, resulting in errors like "connection pool exhausted", "too many connections", or "FATAL: remaining connection slots are reserved". New requests fail while existing connections are held open.
+
+### Symptoms
+- Application logs show: `HikariPool-1 - Connection is not available, request timed out`
+- PostgreSQL: `FATAL: sorry, too many clients already`
+- MySQL: `ERROR 1040 (HY000): Too many connections`
+- API requests return 500 errors mentioning database
+- Database monitoring shows connections at 100% of limit
+
+### Diagnostic Steps
+
+1. **Check current connection count:**
+   ```sql
+   -- PostgreSQL:
+   SELECT count(*), state FROM pg_stat_activity GROUP BY state;
+   SELECT max_conn, used FROM
+     (SELECT COUNT(*) used FROM pg_stat_activity) t1,
+     (SELECT setting::int max_conn FROM pg_settings WHERE name='max_connections') t2;
+
+   -- MySQL:
+   SHOW STATUS LIKE 'Threads_connected';
+   SHOW VARIABLES LIKE 'max_connections';
+   ```
+
+2. **Find long-running or idle connections:**
+   ```sql
+   -- PostgreSQL:
+   SELECT pid, usename, application_name, state, query_start,
+          now() - query_start AS duration, query
+   FROM pg_stat_activity
+   WHERE state != 'idle'
+   ORDER BY duration DESC;
+
+   -- Kill a specific idle connection:
+   SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+   WHERE state = 'idle' AND query_start < now() - interval '10 minutes';
+   ```
+
+3. **Check connection pool configuration:**
+   ```bash
+   # HikariCP (Java) - look in application.properties:
+   grep -r "maximumPoolSize\|connectionTimeout" /etc/myapp/
+   # Default maximumPoolSize is 10 — usually too low for production
+   ```
+
+### Resolution Steps
+
+1. **Kill idle/stale connections immediately (emergency):**
+   ```sql
+   -- PostgreSQL - kill all idle connections older than 5 minutes:
+   SELECT pg_terminate_backend(pid)
+   FROM pg_stat_activity
+   WHERE state = 'idle'
+     AND query_start < now() - interval '5 minutes'
+     AND pid <> pg_backend_pid();
+   ```
+
+2. **Increase max_connections in PostgreSQL:**
+   ```bash
+   # Edit postgresql.conf:
+   max_connections = 200   # default is 100
+   sudo systemctl restart postgresql
+   ```
+
+3. **Tune connection pool settings (HikariCP example):**
+   ```properties
+   spring.datasource.hikari.maximum-pool-size=20
+   spring.datasource.hikari.minimum-idle=5
+   spring.datasource.hikari.connection-timeout=30000
+   spring.datasource.hikari.idle-timeout=600000
+   spring.datasource.hikari.max-lifetime=1800000
+   ```
+
+4. **Use PgBouncer as a connection pooler:**
+   ```bash
+   sudo apt install pgbouncer
+   # Configure /etc/pgbouncer/pgbouncer.ini:
+   pool_mode = transaction
+   max_client_conn = 1000
+   default_pool_size = 25
+   sudo systemctl restart pgbouncer
+   ```
+
+5. **Ensure connections are properly closed in application:**
+   ```python
+   # Python — always use context managers:
+   with db.connect() as conn:
+       result = conn.execute(query)
+   # NOT: conn = db.connect(); conn.execute(query) # leaks if exception
+   ```
+
+### Escalation
+If connections remain exhausted after all steps, escalate to the DBA team with:
+- Output of `pg_stat_activity` query
+- Application connection pool configuration
+- Number of application instances running
+
+### Prevention
+- Never hardcode connection strings — use pool config
+- Use PgBouncer in production for all PostgreSQL deployments
+- Set connection timeout and max-lifetime to prevent leaked connections
+- Alert when connections exceed 80% of max_connections

@@ -1,0 +1,68 @@
+## Linux Kernel Panic — Runbook
+
+### Problem Description
+A Linux server has crashed with a kernel panic and is either hung on the console or rebooting repeatedly. Kernel panics are fatal errors — the kernel has detected an unrecoverable state.
+
+### Symptoms
+- Server unreachable via SSH; console shows `Kernel panic - not syncing:`
+- Serial console / IPMI log shows traceback starting with `BUG:` or `Oops:`
+- Host auto-reboots in a loop after hitting panic
+- Dmesg after boot contains `Machine check events logged`
+
+### Root Cause Analysis
+1. Faulty RAM (ECC errors, bad DIMM)
+2. Corrupted filesystem on root partition
+3. Buggy kernel module (vendor driver, custom module)
+4. Recent kernel upgrade introduced a regression
+5. Hardware failure (CPU MCE, disk controller)
+
+### Resolution Steps
+1. **Capture the panic trace** from the serial console / IPMI SOL before reboot. Save the `Call Trace:` lines — these identify the failing module.
+
+2. **Boot the previous working kernel** from the GRUB menu (press Esc/Shift during boot):
+   ```
+   Advanced options → Ubuntu, with Linux <older-version>
+   ```
+
+3. **Check memory with a hardware test:**
+   ```
+   # From rescue mode or live USB
+   memtester 2G 1
+   # Or reboot into memtest86+
+   ```
+
+4. **Review recent upgrades:**
+   ```
+   grep " install " /var/log/dpkg.log | tail -50
+   rpm -qa --last | head -20
+   ```
+
+5. **Inspect hardware error logs:**
+   ```
+   dmesg -T | grep -iE "mce|ecc|hardware error"
+   mcelog --client
+   ```
+
+6. **Disable a suspect out-of-tree module** by blacklisting:
+   ```
+   echo "blacklist <module-name>" > /etc/modprobe.d/blacklist-<mod>.conf
+   update-initramfs -u
+   ```
+
+7. **Filesystem check** if root was corrupted:
+   ```
+   # From rescue mode
+   fsck -y /dev/sdX1
+   ```
+
+### Escalation
+Page the Infrastructure on-call immediately if the host hosts Tier-0 services. Provide:
+- Full panic trace (photo of console is acceptable)
+- Hardware model and firmware versions
+- Timestamp of last successful boot
+
+### Prevention
+- Pin a known-good kernel; stage kernel upgrades to canary hosts first
+- Enable `kdump` to capture crash dumps for root-cause analysis
+- Replace DIMMs showing ECC correctable errors before they become uncorrectable
+- Keep BIOS / BMC firmware current

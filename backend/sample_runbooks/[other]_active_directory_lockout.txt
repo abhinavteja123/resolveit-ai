@@ -1,0 +1,67 @@
+## Active Directory Account Lockout — Runbook
+
+### Problem Description
+A user's Active Directory account keeps locking out, blocking access to email, file shares, SSO apps, and VPN. The lockout often repeats minutes after an admin unlocks the account.
+
+### Symptoms
+- User reports being locked out within minutes of unlock
+- Windows event 4740 ("A user account was locked out") on a DC
+- Authentication failures logged from an unfamiliar source host
+- User prompted for credentials repeatedly in Outlook / OneDrive
+
+### Root Cause Analysis
+1. Cached stale password on a mobile device (iOS Mail, old laptop)
+2. Scheduled task or service running under old credentials
+3. Mapped drive with embedded old password
+4. Compromised credentials — attacker brute-forcing from outside
+5. MFA fatigue attack flooding the account with attempts
+
+### Resolution Steps
+1. **Identify the source of the bad attempts** — on the PDC Emulator, run:
+   ```powershell
+   Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4740} -MaxEvents 20 |
+     Select TimeCreated, @{N='User';E={$_.Properties[0].Value}}, @{N='Source';E={$_.Properties[1].Value}}
+   ```
+   The `Source` column is the machine sending the bad password.
+
+2. **Deep inspection on the source host** — run on the offending machine:
+   ```powershell
+   Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625} -MaxEvents 50 |
+     Select TimeCreated, @{N='Reason';E={$_.Properties[8].Value}}
+   ```
+
+3. **Common cleanup on the source:**
+   - Credential Manager: `cmdkey /list` → delete stale entries
+   - Remove cached Outlook/Exchange profile and re-add
+   - Check `schtasks /query /fo LIST /v` for tasks running with the user's credentials
+   - Inspect Windows Services with `Log On As` = the user
+
+4. **Unlock the AD account:**
+   ```powershell
+   Unlock-ADAccount -Identity <sam-account>
+   ```
+
+5. **Force a password reset** if compromise is suspected:
+   ```powershell
+   Set-ADAccountPassword -Identity <sam> -Reset -NewPassword (Read-Host -AsSecureString)
+   Set-ADUser -Identity <sam> -ChangePasswordAtLogon $true
+   ```
+
+6. **Revoke active sessions** in Microsoft 365 / Entra ID:
+   ```powershell
+   Revoke-AzureADUserAllRefreshToken -ObjectId <upn>
+   ```
+
+7. **Kill stale Kerberos tickets** on the source host: `klist purge`.
+
+### Escalation
+Escalate to the Security / IR team immediately if:
+- Source IP is external or on an untrusted network
+- Pattern matches password-spray (many users, same source)
+- MFA push floods appear in sign-in logs
+
+### Prevention
+- Enforce MFA on all accounts; enable number-matching for push
+- Set lockout threshold to 5 attempts with 15-min auto-unlock
+- Educate users to remove old device registrations when replacing hardware
+- Deploy LAPS for local admin passwords to stop credential reuse

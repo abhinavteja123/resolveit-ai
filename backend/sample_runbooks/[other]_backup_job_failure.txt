@@ -1,0 +1,74 @@
+## Nightly Backup Job Failure — Runbook
+
+### Problem Description
+The scheduled nightly backup job (Veeam, Restic, BorgBackup, or a custom rsync script) has failed or completed with errors. Without healthy backups, the Recovery Point Objective (RPO) is at risk and any data-loss incident during the gap cannot be restored.
+
+### Symptoms
+- Backup job email reports `FAILED` or `completed with warnings`
+- Target backup repository shows yesterday's snapshot missing
+- Restic / Borg log: `repository is locked`, `malformed data`, or `out of space`
+- Storage system reports capacity > 95% on the backup volume
+
+### Root Cause Analysis
+1. Backup target (NFS / S3 / tape) out of capacity
+2. Stale lock file from a previous interrupted run
+3. Network path to backup target temporarily down during the window
+4. Source volume had file-in-use conflicts (open database, VSS failure)
+5. Expired credentials for the backup target (S3 key, SMB password)
+
+### Resolution Steps
+1. **Read the latest log end-to-end** — the top of the trace usually names the failure:
+   ```
+   tail -n 200 /var/log/backup/<date>.log
+   journalctl -u backup.service --since "yesterday"
+   ```
+
+2. **Check target capacity:**
+   ```
+   df -h /mnt/backup
+   aws s3api list-objects --bucket <bucket> --query "[sum(Contents[].Size)]"
+   ```
+
+3. **Clear a stale lock (Restic example):**
+   ```
+   restic -r <repo> unlock
+   ```
+
+4. **Run a repository integrity check:**
+   ```
+   restic check
+   borg check --repair <repo>
+   ```
+   Do NOT run `--repair` variants without understanding implications — they may discard data.
+
+5. **Test credentials and reach to target:**
+   ```
+   aws s3 ls s3://<bucket>/<prefix>/
+   smbclient -L //backup-server -U <user>
+   ```
+
+6. **Prune old snapshots** if capacity is the issue, keeping retention policy intact:
+   ```
+   restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 12 --prune
+   ```
+
+7. **Manually rerun the job** and confirm next-morning success:
+   ```
+   systemctl start backup.service
+   ```
+
+8. **Test a restore** of a representative file to confirm the backup is actually usable — "backup success" without restore test is a false negative risk.
+
+### Escalation
+Escalate to the Storage / SRE team if:
+- Two consecutive nightly runs fail
+- Repository integrity check reports corruption
+- Restore test fails
+- RPO breach is likely (> 24 h since last verified backup)
+
+### Prevention
+- Alert on "no successful backup in 26h" — catches silent skips, not just explicit failures
+- Weekly automated restore test to a sandbox environment
+- Capacity alerts at 80% of the backup target
+- Rotate long-lived credentials; use short-lived IAM roles where possible
+- Offsite copy (3-2-1 rule) — onsite backups alone don't protect against ransomware

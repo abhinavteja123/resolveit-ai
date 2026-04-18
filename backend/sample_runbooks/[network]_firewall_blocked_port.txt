@@ -1,0 +1,75 @@
+## Firewall Blocking Application Port — Runbook
+
+### Problem Description
+A service listening on a specific TCP/UDP port is unreachable from remote hosts even though the service is running locally. The most common cause is a host firewall (iptables/nftables/firewalld) or a network-layer firewall / security group dropping the traffic.
+
+### Symptoms
+- `telnet <host> <port>` or `nc -vz <host> <port>` from remote host hangs or says "Connection refused" / "No route to host"
+- `ss -tlnp | grep <port>` on the server shows the service IS listening
+- Application logs show no incoming connections during the test
+- `ping` to the host works but TCP to the port fails
+
+### Root Cause Analysis
+1. iptables / nftables rule dropping inbound traffic
+2. firewalld zone not permitting the service
+3. Cloud security group / VPC ACL missing an allow rule
+4. SELinux blocking the bind (less common; port-label mismatch)
+5. Application bound to 127.0.0.1 only, not 0.0.0.0
+
+### Resolution Steps
+1. **Confirm the service is listening on the right interface:**
+   ```
+   ss -tlnp | grep :<port>
+   ```
+   If the bind address is `127.0.0.1`, change the app config to `0.0.0.0` or the private IP.
+
+2. **Test connectivity from the server itself, then from outside:**
+   ```
+   # On server
+   nc -vz 127.0.0.1 <port>
+   # From client
+   nc -vz <server-ip> <port>
+   ```
+
+3. **Inspect the firewall in use:**
+   ```
+   systemctl is-active firewalld nftables iptables
+   iptables -L -n -v
+   nft list ruleset
+   firewall-cmd --list-all
+   ```
+
+4. **Open the port temporarily (firewalld example):**
+   ```
+   firewall-cmd --add-port=<port>/tcp
+   # If it works, persist it:
+   firewall-cmd --permanent --add-port=<port>/tcp
+   firewall-cmd --reload
+   ```
+
+5. **Open the port with nftables / iptables:**
+   ```
+   nft add rule inet filter input tcp dport <port> accept
+   # or
+   iptables -I INPUT -p tcp --dport <port> -j ACCEPT
+   iptables-save > /etc/iptables/rules.v4
+   ```
+
+6. **Check SELinux port labels:**
+   ```
+   semanage port -l | grep <port>
+   semanage port -a -t http_port_t -p tcp <port>
+   ```
+
+7. **Check cloud security groups** (AWS/GCP/Azure) — ensure an inbound rule exists from the client CIDR to `<port>/tcp`.
+
+### Escalation
+If host firewall is open and cloud SG permits traffic but connections still fail, escalate to Networking with:
+- Output of `traceroute` from client
+- `tcpdump -i any port <port>` capture on the server
+- SG / NACL / route-table IDs
+
+### Prevention
+- Codify firewall rules (Ansible / Terraform) — no manual `iptables` edits
+- Add a firewall-allow test to the service deployment CI
+- Monitor with a synthetic probe that opens a TCP connection every minute

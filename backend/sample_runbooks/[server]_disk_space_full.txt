@@ -1,0 +1,70 @@
+## Disk Space Full — Runbook
+
+### Problem Description
+Linux server has exhausted disk space on one or more partitions, causing services to fail, logs to stop writing, or the OS to become unresponsive. Common trigger: runaway log files, uncleaned /tmp, stale Docker layers.
+
+### Symptoms
+- Applications error with `No space left on device` or `ENOSPC`
+- `df -h` shows a partition at 100% use
+- MySQL/Postgres refuse writes; services fail to restart
+- SSH sessions freeze when shell history writes fail
+
+### Root Cause Analysis
+1. Application log files growing without rotation
+2. Old kernels accumulated under /boot
+3. Docker images, stopped containers, or volumes not pruned
+4. Core dumps in /var/lib/systemd/coredump
+5. Orphaned files held by deleted-but-open file descriptors
+
+### Resolution Steps
+1. **Identify the full partition:**
+   ```
+   df -h
+   ```
+
+2. **Find the largest directories:**
+   ```
+   du -h --max-depth=1 /var | sort -h | tail -20
+   du -xh / 2>/dev/null | sort -h | tail -30
+   ```
+
+3. **Clean package cache (Debian/Ubuntu):**
+   ```
+   apt-get clean
+   apt-get autoremove --purge
+   ```
+
+4. **Remove old kernels if /boot is full:**
+   ```
+   dpkg -l 'linux-image-*' | awk '/^ii/{print $2}'
+   apt-get remove --purge <old-kernel-package>
+   ```
+
+5. **Truncate rotating logs safely:**
+   ```
+   truncate -s 0 /var/log/syslog
+   journalctl --vacuum-time=7d
+   ```
+
+6. **Docker cleanup (if applicable):**
+   ```
+   docker system prune -af --volumes
+   ```
+
+7. **Recover space held by deleted-but-open files:**
+   ```
+   lsof +L1 | awk '$5=="REG"{print $2, $9}' | sort -u
+   systemctl restart <service-holding-the-file>
+   ```
+
+### Escalation
+If the partition continues to fill within minutes of cleanup, escalate to Tier-2 Infrastructure with:
+- `df -h`, `du` output
+- Application log write-rate over the last hour
+- Whether a filesystem expansion (LVM / cloud volume resize) is warranted
+
+### Prevention
+- Configure `logrotate` for all application logs
+- Enable `journald` size limits (`SystemMaxUse=1G` in journald.conf)
+- Alert at 80% disk usage, page at 90%
+- Schedule weekly `docker system prune` on Docker hosts

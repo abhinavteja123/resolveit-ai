@@ -1,0 +1,71 @@
+## Apache 502 Bad Gateway — Runbook
+
+### Problem Description
+Apache HTTP Server returns HTTP 502 Bad Gateway errors to end users. This typically occurs when Apache is acting as a reverse proxy and the backend application server is not responding.
+
+### Symptoms
+- Users report seeing "502 Bad Gateway" error pages
+- Apache error logs show: `proxy: error reading status line from remote server`
+- Backend application (e.g., Tomcat, Node.js) may be down or overloaded
+
+### Root Cause Analysis
+1. Backend application server has crashed or is not running
+2. Backend server is overloaded and not responding within the timeout period
+3. Firewall rules blocking traffic between Apache and the backend
+4. Incorrect ProxyPass configuration in Apache
+5. Backend server running out of memory (OOM killed)
+
+### Resolution Steps
+1. **Check backend server status:**
+   ```
+   systemctl status tomcat
+   systemctl status nodejs-app
+   ```
+
+2. **Check if the backend port is listening:**
+   ```
+   netstat -tlnp | grep 8080
+   ss -tlnp | grep 8080
+   ```
+
+3. **Restart the backend application:**
+   ```
+   systemctl restart tomcat
+   # OR
+   pm2 restart all
+   ```
+
+4. **Review Apache proxy configuration:**
+   ```
+   grep -r "ProxyPass" /etc/apache2/sites-enabled/
+   ```
+   Ensure the backend URL and port match the running application.
+
+5. **Increase proxy timeout if backend is slow:**
+   ```
+   ProxyTimeout 300
+   ```
+
+6. **Check system resources:**
+   ```
+   free -m       # Check memory
+   top           # Check CPU usage
+   df -h         # Check disk space
+   ```
+
+7. **Review logs:**
+   ```
+   tail -f /var/log/apache2/error.log
+   journalctl -u tomcat -f
+   ```
+
+### Escalation
+If the issue persists after all resolution steps, escalate to Tier-2 Infrastructure team with:
+- Apache error logs (last 100 lines)
+- Backend application logs
+- System resource snapshot (top, free, df)
+
+### Prevention
+- Set up monitoring alerts for backend health checks
+- Configure Apache health check module (mod_proxy_hcheck)
+- Implement auto-restart for critical backend services

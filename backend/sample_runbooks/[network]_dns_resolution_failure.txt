@@ -1,0 +1,82 @@
+## DNS Resolution Failure — Runbook
+
+### Problem Description
+Internal or external DNS resolution is failing, causing applications and services to be unable to resolve hostnames. Users may report "unable to connect" or "server not found" errors.
+
+### Symptoms
+- `nslookup` or `dig` commands return SERVFAIL or timeout
+- Applications fail to connect to services by hostname
+- Network monitoring shows DNS query failures
+- Services using service discovery (e.g., Consul, Kubernetes DNS) are affected
+
+### Diagnostic Steps
+
+1. **Test DNS resolution from the affected server:**
+   ```
+   nslookup google.com
+   dig @8.8.8.8 google.com
+   host internal-service.company.local
+   ```
+
+2. **Check DNS server configuration:**
+   ```
+   cat /etc/resolv.conf
+   # Windows:
+   ipconfig /all | findstr "DNS"
+   ```
+
+3. **Verify DNS service is running:**
+   ```
+   systemctl status named       # BIND
+   systemctl status dnsmasq     # dnsmasq
+   systemctl status systemd-resolved
+   ```
+
+4. **Check for DNS cache poisoning or stale cache:**
+   ```
+   # Flush DNS cache
+   systemd-resolve --flush-caches   # Linux (systemd)
+   ipconfig /flushdns               # Windows
+   rndc flush                       # BIND server
+   ```
+
+### Resolution Steps
+
+1. **If DNS server is down — restart it:**
+   ```
+   systemctl restart named
+   systemctl restart systemd-resolved
+   ```
+
+2. **If resolv.conf is corrupted, fix it:**
+   ```
+   echo "nameserver 8.8.8.8" > /etc/resolv.conf
+   echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+   ```
+
+3. **Check firewall rules allow DNS traffic:**
+   ```
+   iptables -L -n | grep 53
+   ufw status | grep 53
+   ```
+   Ensure UDP/TCP port 53 is open.
+
+4. **For Kubernetes DNS issues:**
+   ```
+   kubectl get pods -n kube-system -l k8s-app=kube-dns
+   kubectl logs -n kube-system -l k8s-app=kube-dns
+   kubectl rollout restart deployment/coredns -n kube-system
+   ```
+
+5. **Verify zone file records (if internal DNS):**
+   ```
+   named-checkzone company.local /etc/bind/zones/db.company.local
+   ```
+
+### Escalation
+If DNS resolution still fails after these steps, escalate to the Network Operations Center (NOC) team.
+
+### Prevention
+- Monitor DNS server health with Nagios/Zabbix
+- Set up secondary/backup DNS servers
+- Enable DNS query logging for troubleshooting

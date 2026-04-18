@@ -1,0 +1,93 @@
+## Application Out of Memory (OOM) — Runbook
+
+### Problem Description
+A Java/Python/Node.js application is consuming excessive memory and getting killed by the Linux OOM Killer, or throwing OutOfMemoryError exceptions. This causes service outages and request failures.
+
+### Symptoms
+- Application process terminated unexpectedly
+- `dmesg` or `journalctl` shows "Out of memory: Kill process" messages
+- Java apps throw `java.lang.OutOfMemoryError`
+- Node.js shows "FATAL ERROR: CALL_AND_RETRY_LAST Allocation failed - JavaScript heap out of memory"
+- Kubernetes pods show OOMKilled status
+
+### Root Cause Analysis
+1. Memory leak in application code
+2. Insufficient memory allocation (JVM heap, container limits)
+3. Too many concurrent connections or requests
+4. Large dataset loaded into memory without pagination
+5. Container memory limits set too low
+
+### Resolution Steps
+
+1. **Identify the killed process:**
+   ```
+   dmesg | grep -i "oom\|killed"
+   journalctl -k | grep -i "oom"
+   ```
+
+2. **Check current memory usage:**
+   ```
+   free -m
+   top -o %MEM
+   ps aux --sort=-%mem | head -20
+   ```
+
+3. **For Java applications — increase heap size:**
+   ```
+   # In application startup script:
+   export JAVA_OPTS="-Xms512m -Xmx2048m -XX:+UseG1GC"
+   
+   # Or in Docker/K8s:
+   env:
+     - name: JAVA_OPTS
+       value: "-Xms512m -Xmx2048m"
+   ```
+
+4. **For Node.js applications — increase heap:**
+   ```
+   node --max-old-space-size=4096 app.js
+   # Or set env:
+   export NODE_OPTIONS="--max-old-space-size=4096"
+   ```
+
+5. **For Kubernetes — increase container memory limits:**
+   ```yaml
+   resources:
+     requests:
+       memory: "512Mi"
+     limits:
+       memory: "2Gi"
+   ```
+
+6. **Restart the affected service:**
+   ```
+   systemctl restart myapp
+   # Or for K8s:
+   kubectl rollout restart deployment/myapp
+   ```
+
+7. **Enable memory profiling for root cause analysis:**
+   ```
+   # Java:
+   -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/heapdump.hprof
+   
+   # Python:
+   pip install memory-profiler
+   python -m memory_profiler app.py
+   
+   # Node.js:
+   node --inspect app.js
+   # Then use Chrome DevTools Memory tab
+   ```
+
+### Escalation
+If memory consumption continues to grow after increasing limits, escalate to the Development team for memory leak investigation with:
+- Heap dump file
+- Memory usage graphs from monitoring
+- Application logs around the time of OOM
+
+### Prevention
+- Set up memory usage alerts at 80% threshold
+- Implement connection pooling and request queuing
+- Use streaming/pagination for large datasets
+- Regular load testing to identify memory limits
