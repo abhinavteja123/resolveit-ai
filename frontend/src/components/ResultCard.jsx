@@ -1,3 +1,4 @@
+import ReactMarkdown from 'react-markdown';
 import SourceBadge from './SourceBadge';
 import FeedbackButtons from './FeedbackButtons';
 import { FileText, TrendingUp, Zap } from 'lucide-react';
@@ -61,8 +62,19 @@ export default function ResultCard({ result, onFeedback }) {
 
         {/* Answer content */}
         <div className="px-6 py-5">
-          <div className="prose prose-invert prose-sm max-w-none text-dark-200 leading-relaxed whitespace-pre-wrap">
-            {answer}
+          <div className="prose prose-invert prose-sm max-w-none text-dark-200 leading-relaxed">
+            <ReactMarkdown
+              components={{
+                p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
+                ol: ({ children }) => <ol className="list-decimal pl-5 mb-3 space-y-1">{children}</ol>,
+                ul: ({ children }) => <ul className="list-disc pl-5 mb-3 space-y-1">{children}</ul>,
+                li: ({ children }) => <li className="text-dark-200">{children}</li>,
+                strong: ({ children }) => <strong className="text-dark-100 font-semibold">{children}</strong>,
+                code: ({ children }) => <code className="bg-dark-700 px-1.5 py-0.5 rounded text-xs font-mono text-primary-300">{children}</code>,
+              }}
+            >
+              {answer}
+            </ReactMarkdown>
           </div>
         </div>
 
