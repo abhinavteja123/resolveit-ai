@@ -15,7 +15,7 @@ async def get_me(user: dict = Depends(get_current_user)):
         "email": user["email"],
         "name": user["name"],
         "picture": user["picture"],
-        "is_admin": user["email"] in ADMIN_EMAILS,
+        "is_admin": user["email"].lower().strip() in [e.lower().strip() for e in ADMIN_EMAILS],
     }
 
 

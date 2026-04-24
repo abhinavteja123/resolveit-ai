@@ -1,25 +1,48 @@
 import { useState, useEffect } from 'react';
-import Navbar from '../components/Navbar';
+import { useNavigate } from 'react-router-dom';
+import AppLayout from '../components/AppLayout';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
 import {
-  History,
-  ChevronDown,
-  ChevronUp,
-  ThumbsUp,
-  ThumbsDown,
-  Search,
-  Calendar,
-  TrendingUp,
-  ChevronLeft,
-  ChevronRight,
-  Clock,
+  History, ChevronDown, ChevronUp, ThumbsUp, ThumbsDown,
+  Calendar, ChevronLeft, ChevronRight, Clock, MessageSquarePlus,
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
+function confColor(score) {
+  if (score >= 0.7) return 'text-emerald-400';
+  if (score >= 0.4) return 'text-amber-400';
+  return 'text-red-400';
+}
+
+function confAccent(score) {
+  if (score >= 0.7) return 'border-l-emerald-500/40';
+  if (score >= 0.4) return 'border-l-amber-500/40';
+  return 'border-l-red-500/40';
+}
+
+function buildSeed(log) {
+  const turns = log.turns && log.turns.length > 0 ? log.turns : [log];
+  return turns.flatMap((turn, i) => [
+    { id: i * 2 + 1, type: 'user', text: turn.query_text },
+    {
+      id: i * 2 + 2,
+      type: 'assistant',
+      queryText: turn.query_text,
+      result: {
+        answer: turn.llm_response || '',
+        sources: (turn.retrieved_sources || []).map(s => ({ filename: s })),
+        top_confidence: turn.confidence_score || 0,
+        query_log_id: turn.id,
+      },
+    },
+  ]);
+}
+
 export default function QueryHistory() {
   const { token } = useAuth();
+  const navigate = useNavigate();
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
@@ -27,7 +50,7 @@ export default function QueryHistory() {
   const [expandedId, setExpandedId] = useState(null);
 
   useEffect(() => {
-    const fetchHistory = async () => {
+    const fetch = async () => {
       setLoading(true);
       try {
         const res = await axios.get(`${API_BASE}/history`, {
@@ -36,197 +59,145 @@ export default function QueryHistory() {
         });
         setLogs(res.data.logs || []);
         setTotalPages(res.data.total_pages || 0);
-      } catch (err) {
-        console.error('Failed to fetch history:', err);
-      } finally {
-        setLoading(false);
-      }
+      } catch {}
+      finally { setLoading(false); }
     };
-
-    fetchHistory();
+    fetch();
   }, [token, page]);
 
-  const toggleExpand = (id) => {
-    setExpandedId(expandedId === id ? null : id);
-  };
-
-  const confidenceClass = (score) => {
-    if (score >= 0.7) return 'text-emerald-400';
-    if (score >= 0.4) return 'text-amber-400';
-    return 'text-red-400';
-  };
-
   return (
-    <div className="min-h-screen bg-dark-950 bg-mesh">
-      <Navbar />
+    <AppLayout>
+      <main className="max-w-4xl mx-auto px-4 py-8">
 
-      <main className="max-w-5xl mx-auto px-4 py-8">
-        {/* Header */}
         <div className="flex items-center gap-3 mb-8">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
-            <History className="w-5 h-5 text-white" />
+          <div className="page-header-icon bg-sky-500/10 border border-sky-500/20">
+            <History className="w-5 h-5 text-sky-400" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-white">Query History</h1>
-            <p className="text-sm text-dark-500">Your past queries and AI responses</p>
+            <h1 className="text-xl font-bold text-dark-100">Query History</h1>
+            <p className="text-sm text-dark-600">Your past queries and AI responses</p>
           </div>
         </div>
 
-        {/* Loading */}
         {loading && (
-          <div className="space-y-3">
-            {[...Array(5)].map((_, i) => (
-              <div key={i} className="skeleton h-20 rounded-xl" />
-            ))}
+          <div className="space-y-2">
+            {[...Array(5)].map((_, i) => <div key={i} className="skeleton h-14 rounded-xl" />)}
           </div>
         )}
 
-        {/* Empty state */}
         {!loading && logs.length === 0 && (
-          <div className="glass-card p-12 text-center">
-            <Clock className="w-12 h-12 text-dark-600 mx-auto mb-3" />
-            <p className="text-dark-400 text-lg">No queries yet</p>
-            <p className="text-dark-600 text-sm mt-1">Your query history will appear here</p>
+          <div className="glass-card p-14 text-center">
+            <Clock className="w-10 h-10 text-dark-700 mx-auto mb-3" />
+            <p className="text-dark-500 font-medium">No queries yet</p>
+            <p className="text-dark-700 text-sm mt-1">Your history will appear here after your first query</p>
           </div>
         )}
 
-        {/* Logs list */}
         {!loading && logs.length > 0 && (
-          <div className="space-y-3">
-            {logs.map((log) => (
-              <div
-                key={log.id}
-                className="glass-card overflow-hidden transition-all duration-300"
-              >
-                {/* Header row */}
-                <button
-                  onClick={() => toggleExpand(log.id)}
-                  className="w-full px-5 py-4 flex items-center justify-between gap-4 text-left hover:bg-dark-800/20 transition-colors"
+          <div className="space-y-2">
+            {logs.map((log) => {
+              const expanded = expandedId === log.id;
+              const conf = Math.round((log.confidence_score || 0) * 100);
+              return (
+                <div
+                  key={log.id}
+                  className={`glass-card overflow-hidden border-l-2 transition-all duration-200 ${confAccent(log.confidence_score || 0)}`}
                 >
-                  <div className="flex items-center gap-3 flex-1 min-w-0">
-                    <Search className="w-4 h-4 text-dark-500 flex-shrink-0" />
-                    <p className="text-sm font-medium text-dark-200 truncate">
-                      {log.query_text}
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-4 flex-shrink-0">
-                    {/* Feedback icon */}
-                    {log.feedback && (
-                      <div>
-                        {log.feedback.rating === 1 ? (
-                          <ThumbsUp className="w-4 h-4 text-emerald-400" />
-                        ) : (
-                          <ThumbsDown className="w-4 h-4 text-red-400" />
-                        )}
-                      </div>
-                    )}
-
-                    {/* Confidence */}
-                    <div className="flex items-center gap-1.5">
-                      <TrendingUp className="w-3.5 h-3.5 text-dark-600" />
-                      <span
-                        className={`text-xs font-mono ${confidenceClass(
-                          log.confidence_score
-                        )}`}
-                      >
-                        {Math.round((log.confidence_score || 0) * 100)}%
-                      </span>
-                    </div>
-
-                    {/* Date */}
-                    <div className="flex items-center gap-1.5 text-dark-600 text-xs">
-                      <Calendar className="w-3.5 h-3.5" />
-                      {log.queried_at
-                        ? new Date(log.queried_at).toLocaleDateString('en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                          })
-                        : ''}
-                    </div>
-
-                    {/* Expand icon */}
-                    {expandedId === log.id ? (
-                      <ChevronUp className="w-4 h-4 text-dark-500" />
-                    ) : (
-                      <ChevronDown className="w-4 h-4 text-dark-500" />
-                    )}
-                  </div>
-                </button>
-
-                {/* Expanded content */}
-                {expandedId === log.id && (
-                  <div className="px-5 pb-5 border-t border-dark-700/30 animate-slide-down">
-                    <div className="pt-4">
-                      <p className="text-xs font-semibold text-dark-500 uppercase tracking-wider mb-2">
-                        AI Response
-                      </p>
-                      <div className="text-sm text-dark-300 leading-relaxed whitespace-pre-wrap bg-dark-900/40 rounded-xl p-4 max-h-80 overflow-y-auto">
-                        {log.llm_response || 'No response recorded'}
-                      </div>
-
-                      {/* Sources */}
-                      {log.retrieved_sources?.length > 0 && (
-                        <div className="mt-3">
-                          <p className="text-xs text-dark-500 mb-1.5">Sources:</p>
-                          <div className="flex flex-wrap gap-1.5">
-                            {log.retrieved_sources.map((src, i) => (
-                              <span
-                                key={i}
-                                className="badge bg-dark-800/80 text-dark-400 border border-dark-700/50"
-                              >
-                                {src}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
+                  <button
+                    onClick={() => setExpandedId(expanded ? null : log.id)}
+                    className="w-full px-5 py-3.5 flex items-center justify-between gap-4 text-left hover:bg-dark-900/40 transition-colors"
+                  >
+                    <p className="text-sm font-medium text-dark-300 truncate flex-1">{log.query_text}</p>
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                      {log.turn_count > 1 && (
+                        <span className="text-[10px] text-dark-500 bg-dark-800/60 px-1.5 py-0.5 rounded font-mono border border-dark-700/50">
+                          {log.turn_count} turns
+                        </span>
                       )}
-
-                      {/* Feedback info */}
                       {log.feedback && (
-                        <div className="mt-3 flex items-center gap-2 text-xs text-dark-500">
-                          {log.feedback.rating === 1 ? (
-                            <ThumbsUp className="w-3 h-3 text-emerald-400" />
-                          ) : (
-                            <ThumbsDown className="w-3 h-3 text-red-400" />
-                          )}
-                          Feedback submitted
-                          {log.feedback.comment && `: "${log.feedback.comment}"`}
-                        </div>
+                        log.feedback.rating === 1
+                          ? <ThumbsUp className="w-3.5 h-3.5 text-emerald-400" />
+                          : <ThumbsDown className="w-3.5 h-3.5 text-red-400" />
                       )}
+                      <span className={`text-xs font-mono font-semibold ${confColor(log.confidence_score || 0)}`}>
+                        {conf}%
+                      </span>
+                      <div className="flex items-center gap-1 text-dark-700 text-xs">
+                        <Calendar className="w-3 h-3" />
+                        {log.queried_at ? new Date(log.queried_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''}
+                      </div>
+                      {expanded ? <ChevronUp className="w-3.5 h-3.5 text-dark-700" /> : <ChevronDown className="w-3.5 h-3.5 text-dark-700" />}
                     </div>
-                  </div>
-                )}
-              </div>
-            ))}
+                  </button>
+
+                  {expanded && (
+                    <div className="px-5 pb-5 border-t border-dark-800/50 animate-slide-down">
+                      <div className="flex items-center justify-between mt-4 mb-3">
+                        <p className="text-[11px] font-semibold text-dark-600 uppercase tracking-widest">
+                          {log.turn_count > 1 ? `Thread · ${log.turn_count} turns` : 'AI Response'}
+                        </p>
+                        <button
+                          onClick={() => navigate('/dashboard', { state: { seed: buildSeed(log), threadId: log.id } })}
+                          className="flex items-center gap-1.5 text-xs text-primary-400 hover:text-primary-300 transition-colors px-2.5 py-1 rounded-lg bg-primary-600/10 hover:bg-primary-600/20 border border-primary-600/20"
+                        >
+                          <MessageSquarePlus className="w-3.5 h-3.5" />
+                          Continue Chat
+                        </button>
+                      </div>
+
+                      {(log.turns || [log]).map((turn, ti) => (
+                        <div key={turn.id} className={ti > 0 ? 'mt-4 pt-4 border-t border-dark-800/30' : ''}>
+                          {log.turn_count > 1 && ti > 0 && (
+                            <div className="text-xs text-dark-400 bg-primary-600/10 border border-primary-600/20 rounded-lg px-3 py-2 mb-2 italic">
+                              Q: {turn.query_text}
+                            </div>
+                          )}
+                          <div className="text-sm text-dark-400 leading-relaxed whitespace-pre-wrap bg-dark-950/50 rounded-xl p-4 max-h-72 overflow-y-auto border border-dark-800/50 font-mono text-xs">
+                            {turn.llm_response || 'No response recorded'}
+                          </div>
+                          {turn.retrieved_sources?.length > 0 && (
+                            <div className="mt-2">
+                              <p className="text-[11px] text-dark-700 mb-1.5">Sources</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {turn.retrieved_sources.map((src, si) => (
+                                  <span key={si} className="text-xs text-dark-500 bg-dark-900/60 px-2 py-0.5 rounded-md border border-dark-800/50">
+                                    {src}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {turn.feedback && (
+                            <div className="mt-2 flex items-center gap-2 text-xs text-dark-600">
+                              {turn.feedback.rating === 1
+                                ? <ThumbsUp className="w-3 h-3 text-emerald-400" />
+                                : <ThumbsDown className="w-3 h-3 text-red-400" />
+                              }
+                              Feedback submitted{turn.feedback.comment && `: "${turn.feedback.comment}"`}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
 
-        {/* Pagination */}
         {totalPages > 1 && (
           <div className="flex items-center justify-center gap-3 mt-8">
-            <button
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={page <= 1}
-              className="btn-secondary flex items-center gap-1.5 disabled:opacity-30"
-            >
-              <ChevronLeft className="w-4 h-4" />
-              Prev
+            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="btn-secondary flex items-center gap-1.5 disabled:opacity-30">
+              <ChevronLeft className="w-3.5 h-3.5" /> Prev
             </button>
-            <span className="text-sm text-dark-500">
-              Page {page} of {totalPages}
-            </span>
-            <button
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              disabled={page >= totalPages}
-              className="btn-secondary flex items-center gap-1.5 disabled:opacity-30"
-            >
-              Next
-              <ChevronRight className="w-4 h-4" />
+            <span className="text-xs text-dark-600">Page {page} of {totalPages}</span>
+            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="btn-secondary flex items-center gap-1.5 disabled:opacity-30">
+              Next <ChevronRight className="w-3.5 h-3.5" />
             </button>
           </div>
         )}
       </main>
-    </div>
+    </AppLayout>
   );
 }

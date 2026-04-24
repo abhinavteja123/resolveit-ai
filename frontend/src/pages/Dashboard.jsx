@@ -1,140 +1,234 @@
-import { useState } from 'react';
-import Navbar from '../components/Navbar';
+import { useState, useRef, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
+import AppLayout from '../components/AppLayout';
 import QueryInput from '../components/QueryInput';
 import ResultCard from '../components/ResultCard';
+import CommandCenter from '../components/CommandCenter';
 import { useQuery } from '../hooks/useQuery';
-import { Cpu, BookOpen, Brain, Layers, AlertTriangle, Shield, Upload, Layers as LayersIcon } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 const SCOPE_OPTIONS = [
-  { value: 'admin', label: 'Admin Runbooks', description: 'Use only admin-indexed runbooks' },
-  { value: 'mine', label: 'My Runbooks', description: 'Use only your uploaded runbooks' },
-  { value: 'both', label: 'Admin + Mine', description: 'Combine admin and your runbooks' },
+  { value: 'admin', label: 'Admin Runbooks' },
+  { value: 'mine',  label: 'My Runbooks' },
+  { value: 'both',  label: 'Admin + Mine' },
 ];
 
+function UserMessage({ text }) {
+  return (
+    <div className="flex justify-end">
+      <div className="max-w-[78%] bg-primary-600/15 border border-primary-600/20 text-dark-200 rounded-2xl rounded-br-sm px-4 py-3 text-[15px] leading-relaxed">
+        {text}
+      </div>
+    </div>
+  );
+}
+
+function AssistantMessage({ result, queryText, onFeedback }) {
+  return (
+    <div className="w-full">
+      <ResultCard result={result} onFeedback={onFeedback} queryText={queryText} />
+    </div>
+  );
+}
+
+function StreamingBubble({ loading, streamingText, streaming }) {
+  return (
+    <div className="w-full animate-fade-in">
+      <div className="glass-card overflow-hidden">
+        <div className="px-5 py-3.5 border-b border-dark-800/50 flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-primary-500 animate-pulse" />
+          <span className="text-xs text-dark-500 font-medium">
+            {loading && !streamingText ? 'Searching runbooks…' : 'Generating resolution…'}
+          </span>
+        </div>
+        <div className="px-5 py-4">
+          {loading && !streamingText ? (
+            <div className="space-y-2.5">
+              {[100, 83, 67, 90, 75].map((w, i) => (
+                <div key={i} className="skeleton h-3 rounded" style={{ width: `${w}%` }} />
+              ))}
+            </div>
+          ) : (
+            <p className={`text-sm text-dark-300 leading-relaxed whitespace-pre-wrap font-mono ${streaming ? 'stream-cursor' : ''}`}>
+              {streamingText}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ErrorBubble({ error }) {
+  return (
+    <div className="w-full animate-slide-up">
+      <div className="glass-card p-4 border-red-500/20">
+        <div className="flex items-center gap-3">
+          <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
+          <div>
+            <p className="text-sm font-medium text-red-400">Query failed</p>
+            <p className="text-xs text-dark-600 mt-0.5">{error}</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Dashboard() {
-  const { result, loading, error, submitQuery, submitFeedback } = useQuery();
-  const [hasQueried, setHasQueried] = useState(false);
+  const { result, loading, streaming, streamingText, error, submitQueryStream, submitFeedback } = useQuery();
+  const location = useLocation();
+  const [messages, setMessages] = useState([]);
   const [scope, setScope] = useState('admin');
+  const [threadId, setThreadId] = useState(null);
+  const chatEndRef = useRef(null);
+  const queryInputRef = useRef(null);
+  const isWorking = loading || streaming;
+
+  // Seed chat from history "Continue Chat" navigation
+  useEffect(() => {
+    if (location.state?.seed?.length) {
+      setMessages(location.state.seed);
+      if (location.state.threadId) setThreadId(location.state.threadId);
+      window.history.replaceState({}, '', location.pathname);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Listen for "New Chat" events dispatched by the Sidebar
+  useEffect(() => {
+    const handleNewChat = () => {
+      setMessages([]);
+      setThreadId(null);
+      window.history.replaceState({}, '', location.pathname);
+    };
+    window.addEventListener('new-chat', handleNewChat);
+    return () => window.removeEventListener('new-chat', handleNewChat);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-scroll to bottom when messages or streaming text changes
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages.length, streamingText]);
+
+  // When streaming finishes and result is ready, add assistant message to chat
+  useEffect(() => {
+    if (result && !streaming && !loading) {
+      // First query establishes the thread — subsequent queries continue it
+      if (!threadId && result.query_log_id) setThreadId(result.query_log_id);
+      setMessages(prev => {
+        const last = prev[prev.length - 1];
+        if (last?.type === 'user') {
+          return [...prev, { id: Date.now(), type: 'assistant', result, queryText: last.text }];
+        }
+        return prev;
+      });
+    }
+  }, [result, streaming, loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // When an error occurs, add error message to chat
+  useEffect(() => {
+    if (error && !isWorking) {
+      setMessages(prev => {
+        const last = prev[prev.length - 1];
+        if (last?.type === 'user') {
+          return [...prev, { id: Date.now(), type: 'error', text: error }];
+        }
+        return prev;
+      });
+    }
+  }, [error, isWorking]);
 
   const handleQuery = async (queryText) => {
-    setHasQueried(true);
+    setMessages(prev => [...prev, { id: Date.now(), type: 'user', text: queryText }]);
     try {
-      await submitQuery(queryText, scope);
+      await submitQueryStream(queryText, scope, threadId);
     } catch (err) {
       toast.error(err.message);
     }
   };
 
+  const handleQuickAction = (prefilled) => {
+    queryInputRef.current?.setQueryText(prefilled);
+    queryInputRef.current?.focus?.();
+  };
+
   return (
-    <div className="min-h-screen bg-dark-950 bg-mesh">
-      <Navbar />
+    <AppLayout>
+      <div className="flex flex-col h-full">
 
-      <main className="max-w-5xl mx-auto px-4 py-12">
-        {/* Hero section (visible before first query) */}
-        {!hasQueried && !result && (
-          <div className="text-center mb-12 animate-fade-in">
-            <div className="w-14 h-14 mx-auto mb-5 rounded-2xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center shadow-xl shadow-primary-500/20">
-              <Cpu className="w-7 h-7 text-white" />
+        {/* ── Chat messages area ── */}
+        <div className="flex-1 overflow-y-auto min-h-0">
+          {messages.length === 0 ? (
+            /* Welcome / command center */
+            <div className="max-w-3xl mx-auto px-4 py-10">
+              <CommandCenter onQuickAction={handleQuickAction} />
             </div>
-            <h1 className="text-3xl sm:text-4xl font-bold text-white mb-3">
-              What issue are you facing?
-            </h1>
-            <p className="text-dark-400 text-sm max-w-lg mx-auto">
-              Describe your IT problem in natural language. Our RAG pipeline will search
-              through indexed runbooks and generate actionable resolution steps.
-            </p>
-          </div>
-        )}
+          ) : (
+            /* Conversation */
+            <div className="max-w-3xl mx-auto px-4 py-6 space-y-5">
+              {messages.map(msg =>
+                msg.type === 'user' ? (
+                  <UserMessage key={msg.id} text={msg.text} />
+                ) : msg.type === 'assistant' ? (
+                  <AssistantMessage
+                    key={msg.id}
+                    result={msg.result}
+                    queryText={msg.queryText}
+                    onFeedback={submitFeedback}
+                  />
+                ) : (
+                  <ErrorBubble key={msg.id} error={msg.text} />
+                )
+              )}
 
-        {/* Query input */}
-        <div className={hasQueried ? 'mb-4' : 'mb-6'}>
-          <QueryInput onSubmit={handleQuery} loading={loading} />
+              {/* In-progress streaming bubble */}
+              {isWorking && (
+                <StreamingBubble
+                  loading={loading}
+                  streamingText={streamingText}
+                  streaming={streaming}
+                />
+              )}
+
+              {/* Scroll anchor */}
+              <div ref={chatEndRef} className="h-1" />
+            </div>
+          )}
         </div>
 
-        {/* Scope selector */}
-        <div className="flex flex-wrap items-center gap-2 mb-8 justify-center">
-          <span className="text-xs text-dark-500 mr-1">Search in:</span>
-          {SCOPE_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => setScope(opt.value)}
-              title={opt.description}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 border ${
-                scope === opt.value
-                  ? 'bg-primary-500/20 text-primary-400 border-primary-500/40'
-                  : 'bg-dark-800/40 text-dark-500 border-dark-700/40 hover:text-dark-300 hover:border-dark-600/60'
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
+        {/* ── Fixed input area at bottom ── */}
+        <div className="flex-shrink-0 border-t border-dark-800/60 bg-dark-950/95 backdrop-blur-xl px-4 pt-3 pb-4">
+          <div className="max-w-3xl mx-auto space-y-2">
+
+            {/* Scope selector */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[11px] text-dark-700 font-medium">Search in:</span>
+              {SCOPE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  onClick={() => setScope(opt.value)}
+                  className={`px-3 py-1 rounded-lg text-xs font-medium transition-all duration-200 border ${
+                    scope === opt.value
+                      ? 'bg-primary-600/15 text-primary-400 border-primary-600/30'
+                      : 'bg-transparent text-dark-600 border-dark-800/60 hover:text-dark-400 hover:border-dark-700/60'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Query input */}
+            <QueryInput
+              ref={queryInputRef}
+              onSubmit={handleQuery}
+              loading={isWorking}
+            />
+          </div>
         </div>
 
-        {/* Loading skeleton */}
-        {loading && (
-          <div className="w-full max-w-3xl mx-auto animate-fade-in">
-            <div className="glass-card p-6 space-y-4">
-              <div className="flex items-center gap-3">
-                <Brain className="w-5 h-5 text-primary-500 animate-pulse" />
-                <span className="text-sm text-dark-400">Searching runbooks & generating resolution...</span>
-              </div>
-              <div className="space-y-3">
-                <div className="skeleton h-4 w-full" />
-                <div className="skeleton h-4 w-5/6" />
-                <div className="skeleton h-4 w-4/6" />
-                <div className="skeleton h-4 w-full" />
-                <div className="skeleton h-4 w-3/4" />
-              </div>
-              <div className="flex gap-2 mt-4">
-                <div className="skeleton h-8 w-24 rounded-full" />
-                <div className="skeleton h-8 w-28 rounded-full" />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Error */}
-        {error && !loading && (
-          <div className="w-full max-w-3xl mx-auto animate-slide-up">
-            <div className="glass-card p-5 border-red-500/20">
-              <div className="flex items-center gap-3">
-                <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0" />
-                <div>
-                  <p className="text-sm font-medium text-red-400">Query Failed</p>
-                  <p className="text-xs text-dark-500 mt-0.5">{error}</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Result */}
-        {result && !loading && (
-          <ResultCard result={result} onFeedback={submitFeedback} />
-        )}
-
-        {/* Feature cards (visible before first query) */}
-        {!hasQueried && !result && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-3xl mx-auto mt-8 animate-slide-up">
-            <div className="glass-card-hover p-5 text-center">
-              <BookOpen className="w-6 h-6 text-primary-400 mx-auto mb-3" />
-              <h3 className="text-sm font-semibold text-dark-200 mb-1">Multi-Format</h3>
-              <p className="text-xs text-dark-500">PDF, DOCX & TXT runbooks indexed with section-aware chunking</p>
-            </div>
-            <div className="glass-card-hover p-5 text-center">
-              <Brain className="w-6 h-6 text-purple-400 mx-auto mb-3" />
-              <h3 className="text-sm font-semibold text-dark-200 mb-1">Smart Retrieval</h3>
-              <p className="text-xs text-dark-500">FAISS vector search + cross-encoder re-ranking for precision</p>
-            </div>
-            <div className="glass-card-hover p-5 text-center">
-              <Layers className="w-6 h-6 text-emerald-400 mx-auto mb-3" />
-              <h3 className="text-sm font-semibold text-dark-200 mb-1">AI Resolution</h3>
-              <p className="text-xs text-dark-500">Gemini LLM generates step-by-step fix with cited sources</p>
-            </div>
-          </div>
-        )}
-      </main>
-    </div>
+      </div>
+    </AppLayout>
   );
 }

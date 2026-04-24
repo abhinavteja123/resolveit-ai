@@ -200,3 +200,99 @@ async def feedback_stats(user: dict = Depends(get_admin_user)):
 
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Stats error: {exc}")
+
+
+@router.get("/runbook-health")
+async def runbook_health(user: dict = Depends(get_admin_user)):
+    """Per-runbook health stats: query count, avg confidence, thumbs-up ratio."""
+    try:
+        sb = get_supabase()
+        runbooks_result = sb.table("runbooks").select("*").order("uploaded_at", desc=True).execute()
+        runbooks = runbooks_result.data or []
+
+        feedback_result = sb.table("feedback").select("*").execute()
+        all_feedback = feedback_result.data or []
+
+        logs_result = (
+            sb.table("query_logs")
+            .select("id,retrieved_sources,confidence_score")
+            .execute()
+        )
+        all_logs = logs_result.data or []
+
+        health_data = []
+        for rb in runbooks:
+            fname = rb["filename"]
+            rb_logs = [l for l in all_logs if fname in (l.get("retrieved_sources") or [])]
+            query_count = len(rb_logs)
+            avg_confidence = (
+                sum(l.get("confidence_score") or 0 for l in rb_logs) / query_count
+                if query_count else 0.0
+            )
+            log_ids = {l["id"] for l in rb_logs}
+            rb_feedback = [f for f in all_feedback if f.get("query_log_id") in log_ids]
+            total_fb = len(rb_feedback)
+            thumbs_up = sum(1 for f in rb_feedback if f.get("rating") == 1)
+            thumbs_up_ratio = (thumbs_up / total_fb) if total_fb else None
+
+            health_data.append({
+                "id": rb["id"],
+                "filename": rb["filename"],
+                "category": rb.get("category", "other"),
+                "chunk_count": rb.get("chunk_count"),
+                "query_count": query_count,
+                "avg_confidence": round(avg_confidence, 3),
+                "thumbs_up_ratio": round(thumbs_up_ratio, 3) if thumbs_up_ratio is not None else None,
+                "needs_attention": thumbs_up_ratio is not None and thumbs_up_ratio < 0.4,
+            })
+
+        return {"runbook_health": health_data}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Health stats error: {exc}")
+
+
+@router.get("/knowledge-gaps")
+async def knowledge_gaps(user: dict = Depends(get_admin_user)):
+    """Low-confidence or negatively-rated queries — potential runbook gaps."""
+    try:
+        from collections import defaultdict
+        sb = get_supabase()
+
+        logs_result = (
+            sb.table("query_logs")
+            .select("id,query_text,confidence_score,queried_at")
+            .execute()
+        )
+        all_logs = {l["id"]: l for l in (logs_result.data or [])}
+
+        fb_result = sb.table("feedback").select("query_log_id,rating").execute()
+        negative_ids = {
+            f["query_log_id"]
+            for f in (fb_result.data or [])
+            if f.get("rating") == -1
+        }
+
+        gap_logs = [
+            l for l in all_logs.values()
+            if (l.get("confidence_score") or 1.0) < 0.5 or l["id"] in negative_ids
+        ]
+
+        groups: dict = defaultdict(list)
+        for log in gap_logs:
+            key = " ".join((log.get("query_text") or "").split()[:5]).lower()
+            groups[key].append(log)
+
+        gaps = []
+        for key, items in sorted(groups.items(), key=lambda x: -len(x[1])):
+            avg_conf = sum((i.get("confidence_score") or 0) for i in items) / len(items)
+            last_seen = max(i.get("queried_at", "") for i in items)
+            gaps.append({
+                "query_text": items[0].get("query_text", key),
+                "count": len(items),
+                "avg_confidence": round(avg_conf, 3),
+                "last_seen": last_seen,
+            })
+
+        return {"knowledge_gaps": gaps[:20]}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Knowledge gaps error: {exc}")

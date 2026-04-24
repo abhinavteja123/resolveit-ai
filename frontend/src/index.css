@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ── Global Styles ─────────────────────────────────────────────────── */
+/* ── Global Reset ──────────────────────────────────────────────────── */
 * {
   margin: 0;
   padding: 0;
@@ -10,99 +10,151 @@
 }
 
 body {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  background-color: #020617;
-  color: #e2e8f0;
+  font-family: 'Plus Jakarta Sans', 'Inter', system-ui, -apple-system, sans-serif;
+  background-color: #0e0b09;
+  color: #e8dfd6;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 /* ── Scrollbar ─────────────────────────────────────────────────────── */
-::-webkit-scrollbar {
-  width: 6px;
-}
-::-webkit-scrollbar-track {
-  background: #0f172a;
-}
-::-webkit-scrollbar-thumb {
-  background: #334155;
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: #0e0b09; }
+::-webkit-scrollbar-thumb { background: #3d332c; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #6d5f57; }
+
+/* ── Background: warm noise grain ─────────────────────────────────── */
+.bg-mesh {
+  background-image:
+    radial-gradient(at 15% 25%, rgba(245, 158, 11, 0.04) 0px, transparent 55%),
+    radial-gradient(at 85% 15%, rgba(217, 119, 6, 0.03) 0px, transparent 55%),
+    radial-gradient(at 50% 85%, rgba(180, 83, 9, 0.03) 0px, transparent 55%);
 }
 
-/* ── Glass Card ────────────────────────────────────────────────────── */
+/* ── Card surfaces ─────────────────────────────────────────────────── */
 @layer components {
+  /* Primary card — warm surface with subtle border */
   .glass-card {
-    @apply bg-dark-800/60 backdrop-blur-xl border border-dark-700/50 rounded-2xl;
+    @apply bg-dark-900/70 backdrop-blur-sm border border-dark-800/80 rounded-2xl;
   }
 
   .glass-card-hover {
-    @apply glass-card transition-all duration-300 hover:border-primary-500/30 hover:shadow-lg hover:shadow-primary-500/5;
+    @apply glass-card transition-all duration-300
+           hover:border-dark-700/80 hover:bg-dark-900/90
+           hover:shadow-lg hover:shadow-black/20;
   }
 
+  /* Elevated surface card (for modals, panels) */
+  .surface-card {
+    @apply bg-dark-900 border border-dark-800/60 rounded-2xl;
+  }
+
+  /* Metric card — for stat displays */
+  .metric-card {
+    @apply bg-dark-900/60 border border-dark-800/70 rounded-xl p-4
+           hover:border-dark-700/80 transition-all duration-300;
+  }
+
+  /* ── Buttons ──────────────────────────────────────────────────────── */
   .btn-primary {
-    @apply bg-gradient-to-r from-primary-600 to-primary-500 text-white font-semibold px-6 py-3 rounded-xl
-           transition-all duration-300 hover:from-primary-500 hover:to-primary-400
-           hover:shadow-lg hover:shadow-primary-500/25 active:scale-[0.98]
-           disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-none;
+    @apply bg-primary-600 text-white font-semibold px-5 py-2.5 rounded-xl
+           transition-all duration-200
+           hover:bg-primary-500 hover:shadow-md hover:shadow-primary-600/20
+           active:scale-[0.98]
+           disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:shadow-none;
   }
 
   .btn-secondary {
-    @apply bg-dark-700/80 text-dark-200 font-medium px-5 py-2.5 rounded-xl border border-dark-600/50
-           transition-all duration-300 hover:bg-dark-600/80 hover:border-dark-500/50
+    @apply bg-dark-800/70 text-dark-300 font-medium px-4 py-2 rounded-xl
+           border border-dark-700/60
+           transition-all duration-200
+           hover:bg-dark-800 hover:border-dark-600/80 hover:text-dark-200
            active:scale-[0.98];
   }
 
-  .input-field {
-    @apply w-full bg-dark-900/80 border border-dark-600/50 rounded-xl px-4 py-3
-           text-dark-100 placeholder:text-dark-500 
-           focus:outline-none focus:border-primary-500/50 focus:ring-2 focus:ring-primary-500/20
-           transition-all duration-300;
+  .btn-ghost {
+    @apply text-dark-400 font-medium px-3 py-1.5 rounded-lg
+           transition-all duration-200
+           hover:text-dark-200 hover:bg-dark-800/60;
   }
 
+  /* ── Inputs ───────────────────────────────────────────────────────── */
+  .input-field {
+    @apply w-full bg-dark-950/80 border border-dark-800/70 rounded-xl px-4 py-3
+           text-dark-100 placeholder:text-dark-600
+           focus:outline-none focus:border-primary-600/50 focus:ring-2 focus:ring-primary-600/15
+           transition-all duration-200;
+  }
+
+  /* ── Badges ───────────────────────────────────────────────────────── */
   .badge {
-    @apply inline-flex items-center px-3 py-1 rounded-full text-xs font-medium;
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
   }
 
   .badge-server {
-    @apply badge bg-red-500/15 text-red-400 border border-red-500/20;
+    @apply badge bg-red-500/10 text-red-400 border border-red-500/20;
   }
 
   .badge-network {
-    @apply badge bg-blue-500/15 text-blue-400 border border-blue-500/20;
+    @apply badge bg-sky-500/10 text-sky-400 border border-sky-500/20;
   }
 
   .badge-application {
-    @apply badge bg-emerald-500/15 text-emerald-400 border border-emerald-500/20;
+    @apply badge bg-emerald-500/10 text-emerald-400 border border-emerald-500/20;
   }
 
   .badge-other {
-    @apply badge bg-amber-500/15 text-amber-400 border border-amber-500/20;
+    @apply badge bg-primary-500/10 text-primary-400 border border-primary-500/20;
   }
 
+  /* ── Skeleton ─────────────────────────────────────────────────────── */
   .skeleton {
-    @apply animate-pulse bg-dark-700/50 rounded-lg;
+    @apply animate-pulse bg-dark-800/50 rounded-lg;
+  }
+
+  /* ── Step card (wizard mode) ──────────────────────────────────────── */
+  .step-card {
+    @apply flex items-start gap-3 p-4 rounded-xl border border-dark-800/60
+           bg-dark-950/40 transition-all duration-200;
+  }
+
+  .step-done {
+    @apply border-emerald-500/20 bg-emerald-500/[0.03];
+  }
+
+  /* ── Page header ──────────────────────────────────────────────────── */
+  .page-header-icon {
+    @apply w-10 h-10 rounded-xl flex items-center justify-center shadow-md;
+  }
+
+  /* ── Divider ──────────────────────────────────────────────────────── */
+  .divider {
+    @apply border-t border-dark-800/60;
   }
 }
 
-/* ── Background gradient mesh ──────────────────────────────────────── */
-.bg-mesh {
-  background-image:
-    radial-gradient(at 20% 20%, rgba(99, 102, 241, 0.08) 0px, transparent 60%),
-    radial-gradient(at 80% 40%, rgba(139, 92, 246, 0.06) 0px, transparent 60%),
-    radial-gradient(at 40% 80%, rgba(59, 130, 246, 0.05) 0px, transparent 60%);
+/* ── Confidence bars ───────────────────────────────────────────────── */
+.confidence-high   { @apply bg-gradient-to-r from-emerald-500 to-emerald-400; }
+.confidence-medium { @apply bg-gradient-to-r from-amber-500 to-amber-400; }
+.confidence-low    { @apply bg-gradient-to-r from-red-500 to-red-400; }
+
+/* ── Streaming cursor ──────────────────────────────────────────────── */
+.stream-cursor::after {
+  content: '▋';
+  display: inline-block;
+  animation: cursorBlink 1s step-end infinite;
+  color: #f59e0b;
+  font-size: 0.85em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
 }
 
-/* ── Confidence bar ────────────────────────────────────────────────── */
-.confidence-high {
-  @apply bg-gradient-to-r from-emerald-500 to-emerald-400;
-}
-.confidence-medium {
-  @apply bg-gradient-to-r from-amber-500 to-amber-400;
-}
-.confidence-low {
-  @apply bg-gradient-to-r from-red-500 to-red-400;
+/* ── Template panel slide ──────────────────────────────────────────── */
+.template-item {
+  @apply px-3 py-2 rounded-lg text-sm text-dark-400 border border-dark-800/50
+         bg-dark-950/40 cursor-pointer
+         transition-all duration-150
+         hover:text-dark-200 hover:border-dark-700/60 hover:bg-dark-900/60
+         text-left;
 }

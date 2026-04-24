@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import Navbar from '../components/Navbar';
+import AppLayout from '../components/AppLayout';
 import RunbookUploader from '../components/RunbookUploader';
 import RunbookTable from '../components/RunbookTable';
 import axios from 'axios';
@@ -16,60 +16,46 @@ export default function MyRunbooks() {
   const fetchMyRunbooks = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await axios.get(`${API_BASE}/runbooks/my`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await axios.get(`${API_BASE}/runbooks/my`, { headers: { Authorization: `Bearer ${token}` } });
       setRunbooks(res.data.runbooks || []);
-    } catch (err) {
-      console.error('Failed to fetch runbooks:', err);
-    } finally {
-      setLoading(false);
-    }
+    } catch {}
+    finally { setLoading(false); }
   }, [token]);
 
   const handleDelete = async (runbookId) => {
-    await axios.delete(`${API_BASE}/runbooks/my/${runbookId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    await axios.delete(`${API_BASE}/runbooks/my/${runbookId}`, { headers: { Authorization: `Bearer ${token}` } });
     await fetchMyRunbooks();
   };
 
-  useEffect(() => {
-    fetchMyRunbooks();
-  }, [fetchMyRunbooks]);
+  useEffect(() => { fetchMyRunbooks(); }, [fetchMyRunbooks]);
 
   return (
-    <div className="min-h-screen bg-dark-950 bg-mesh">
-      <Navbar />
-
+    <AppLayout>
       <main className="max-w-6xl mx-auto px-4 py-8">
-        {/* Header */}
+
         <div className="flex items-center gap-3 mb-8">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center shadow-lg shadow-primary-500/20">
-            <Upload className="w-5 h-5 text-white" />
+          <div className="page-header-icon bg-primary-600/15 border border-primary-600/20">
+            <Upload className="w-5 h-5 text-primary-400" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-white">My Runbooks</h1>
-            <p className="text-sm text-dark-500">Upload and manage your runbooks</p>
+            <h1 className="text-xl font-bold text-dark-100">My Runbooks</h1>
+            <p className="text-sm text-dark-600">Upload and manage your personal runbooks</p>
           </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Upload (left) */}
           <div className="lg:col-span-1">
             <RunbookUploader onUploadComplete={fetchMyRunbooks} />
           </div>
-
-          {/* Runbooks table (right) */}
           <div className="lg:col-span-2">
-            <h2 className="text-lg font-semibold text-dark-100 mb-4 flex items-center gap-2">
-              <FileText className="w-5 h-5 text-dark-500" />
-              Your Runbooks
-            </h2>
+            <div className="flex items-center gap-2 mb-4">
+              <FileText className="w-4 h-4 text-dark-600" />
+              <h2 className="text-base font-semibold text-dark-200">Your Runbooks</h2>
+            </div>
             <RunbookTable runbooks={runbooks} loading={loading} onDelete={handleDelete} />
           </div>
         </div>
       </main>
-    </div>
+    </AppLayout>
   );
 }

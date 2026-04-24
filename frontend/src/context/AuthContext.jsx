@@ -37,7 +37,8 @@ export function AuthProvider({ children }) {
             headers: { Authorization: `Bearer ${idToken}` },
           });
           setIsAdmin(res.data.is_admin === true);
-        } catch {
+        } catch (err) {
+          console.error('[Auth] Failed to fetch admin status:', err?.response?.data || err?.message);
           setIsAdmin(false);
         }
       } else {

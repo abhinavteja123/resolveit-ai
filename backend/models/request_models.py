@@ -7,6 +7,7 @@ from typing import Literal, Optional
 class QueryRequest(BaseModel):
     query: str
     scope: Literal["admin", "mine", "both"] = "admin"
+    thread_id: Optional[str] = None
 
 
 class FeedbackRequest(BaseModel):

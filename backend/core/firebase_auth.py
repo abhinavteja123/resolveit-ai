@@ -73,6 +73,8 @@ async def get_current_user(
 
 async def get_admin_user(user: dict = Depends(get_current_user)) -> dict:
     """Require the caller to be an admin (email in ADMIN_EMAILS list)."""
-    if user["email"] not in ADMIN_EMAILS:
+    user_email = user["email"].lower().strip()
+    admin_emails_lower = [e.lower().strip() for e in ADMIN_EMAILS]
+    if user_email not in admin_emails_lower:
         raise HTTPException(status_code=403, detail="Admin access required")
     return user

@@ -1,57 +1,84 @@
-import { useState } from 'react';
-import { Search, Loader2, Sparkles } from 'lucide-react';
+import { useState, forwardRef, useImperativeHandle, useRef } from 'react';
+import { Search, Loader2, ArrowRight } from 'lucide-react';
 
-export default function QueryInput({ onSubmit, loading }) {
+const QueryInput = forwardRef(function QueryInput({ onSubmit, loading }, ref) {
   const [query, setQuery] = useState('');
+  const inputRef = useRef(null);
+
+  useImperativeHandle(ref, () => ({
+    setQueryText: (text) => setQuery(text),
+    focus: () => inputRef.current?.focus(),
+  }));
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (query.trim() && !loading) {
       onSubmit(query.trim());
+      setQuery('');
     }
   };
 
   return (
     <form onSubmit={handleSubmit} className="w-full max-w-3xl mx-auto">
-      <div className="relative group">
-        {/* Glow effect */}
-        <div className="absolute -inset-0.5 bg-gradient-to-r from-primary-500 to-purple-500 rounded-2xl opacity-0 group-focus-within:opacity-20 blur transition-opacity duration-500" />
-
-        <div className="relative flex items-center bg-dark-900/80 border border-dark-600/50 rounded-2xl overflow-hidden group-focus-within:border-primary-500/40 transition-all duration-300">
-          <div className="flex items-center pl-5 text-dark-500">
-            {loading ? (
-              <Loader2 className="w-5 h-5 animate-spin text-primary-500" />
-            ) : (
-              <Search className="w-5 h-5" />
-            )}
-          </div>
-
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Describe your IT issue... e.g. 'Apache server returning 502 errors'"
-            className="flex-1 bg-transparent border-none px-4 py-4 text-dark-100 placeholder:text-dark-500 focus:outline-none text-[15px]"
-            disabled={loading}
-          />
-
-          <button
-            type="submit"
-            disabled={!query.trim() || loading}
-            className="flex items-center gap-2 mr-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-primary-600 to-primary-500 text-white text-sm font-semibold
-                       transition-all duration-300 hover:from-primary-500 hover:to-primary-400
-                       hover:shadow-lg hover:shadow-primary-500/25 active:scale-[0.97]
-                       disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:shadow-none"
-          >
-            <Sparkles className="w-4 h-4" />
-            {loading ? 'Resolving...' : 'Resolve'}
-          </button>
+      <div
+        className={`relative flex items-center bg-dark-900 border rounded-2xl overflow-hidden transition-all duration-300 ${
+          loading
+            ? 'border-primary-600/40 shadow-md shadow-primary-600/10'
+            : 'border-dark-800/70 hover:border-dark-700/80 focus-within:border-primary-600/50 focus-within:shadow-md focus-within:shadow-primary-600/10'
+        }`}
+      >
+        {/* Icon */}
+        <div className="flex items-center pl-5 text-dark-600">
+          {loading ? (
+            <Loader2 className="w-4.5 h-4.5 w-[18px] h-[18px] animate-spin text-primary-500" />
+          ) : (
+            <Search className="w-[18px] h-[18px]" />
+          )}
         </div>
+
+        {/* Input */}
+        <input
+          ref={inputRef}
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Describe your IT issue — e.g. 'Apache 502 gateway error'"
+          className="flex-1 bg-transparent border-none px-4 py-4 text-dark-200 placeholder:text-dark-700 focus:outline-none text-[15px] leading-snug"
+          disabled={loading}
+        />
+
+        {/* Submit button */}
+        <button
+          type="submit"
+          disabled={!query.trim() || loading}
+          className="flex items-center gap-1.5 mr-2 px-4 py-2 rounded-xl bg-primary-600 text-white text-sm font-semibold
+                     transition-all duration-200
+                     hover:bg-primary-500 hover:shadow-md hover:shadow-primary-600/25
+                     active:scale-[0.97]
+                     disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:shadow-none"
+        >
+          {loading ? (
+            <>
+              <span className="flex gap-0.5">
+                <span className="w-1 h-1 rounded-full bg-white animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1 h-1 rounded-full bg-white animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1 h-1 rounded-full bg-white animate-bounce" style={{ animationDelay: '300ms' }} />
+              </span>
+            </>
+          ) : (
+            <>
+              Resolve
+              <ArrowRight className="w-3.5 h-3.5" />
+            </>
+          )}
+        </button>
       </div>
 
-      <p className="text-center text-dark-600 text-xs mt-3">
-        Powered by RAG pipeline • FAISS + Cross-Encoder + Gemini
+      <p className="text-center text-dark-700 text-[11px] mt-2.5 tracking-wide">
+        RAG pipeline · FAISS + Cross-Encoder + Gemini
       </p>
     </form>
   );
-}
+});
+
+export default QueryInput;

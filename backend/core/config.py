@@ -2,9 +2,12 @@
 
 import os
 import logging
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load .env from the backend directory, regardless of where the server is started from
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(dotenv_path=_env_path)
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +19,19 @@ SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 # ── Google Gemini ─────────────────────────────────────────────────────
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_FALLBACK_MODELS: list[str] = [
+    m.strip()
+    for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-2.0-flash,gemini-2.0-flash-lite").split(",")
+    if m.strip()
+]
 
 # ── Firebase (Authentication) ─────────────────────────────────────────
-FIREBASE_CREDENTIALS_PATH: str = os.getenv("FIREBASE_CREDENTIALS_PATH", "./firebase-service-account.json")
+_default_creds = str(Path(__file__).resolve().parent.parent / "firebase-service-account.json")
+FIREBASE_CREDENTIALS_PATH: str = os.getenv("FIREBASE_CREDENTIALS_PATH", _default_creds)
 
 # ── FAISS ─────────────────────────────────────────────────────────────
-FAISS_INDEX_PATH: str = os.getenv("FAISS_INDEX_PATH", "./faiss_index")
+_default_faiss = str(Path(__file__).resolve().parent.parent / "faiss_index")
+FAISS_INDEX_PATH: str = os.getenv("FAISS_INDEX_PATH", _default_faiss)
 
 # ── Embedding / Reranker models ───────────────────────────────────────
 EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
@@ -66,6 +76,8 @@ def validate_env() -> list[str]:
         issues.append(f"[WARN] Firebase credentials not found at '{FIREBASE_CREDENTIALS_PATH}' - auth will fail")
     if not ADMIN_EMAILS:
         issues.append("[WARN] ADMIN_EMAILS is empty - no users will have admin access")
+    else:
+        logger.info(f"[OK] Admin emails loaded: {ADMIN_EMAILS}")
 
     for issue in issues:
         if issue.startswith("[ERROR]"):

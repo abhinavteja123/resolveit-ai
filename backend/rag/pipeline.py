@@ -23,6 +23,20 @@ logger = logging.getLogger(__name__)
 # ── Query result cache (in-process, TTL) ──────────────────────────────
 _cache: TTLCache = TTLCache(maxsize=QUERY_CACHE_SIZE, ttl=QUERY_CACHE_TTL_SECONDS)
 
+# Below this rerank score the top chunk is unrelated enough that we refuse
+# to answer rather than let the LLM stitch tangential excerpts into a
+# hallucinated response.
+_MIN_TOP_CONFIDENCE = 0.25
+
+# The exact sentinel the LLM emits when the gate-check fails. We detect it
+# post-generation to strip sources/confidence so history, cache, and the UI
+# treat it as a true no-match rather than an answer with bogus citations.
+_ESCALATION_PHRASE = "No relevant information in the indexed runbooks"
+
+
+def _is_escalation(answer: str) -> bool:
+    return bool(answer) and answer.strip().startswith(_ESCALATION_PHRASE)
+
 
 def _cache_key(query: str, scope: str, user_uid: str) -> str:
     raw = f"{scope}:{user_uid}:{query.strip().lower()}"
@@ -55,6 +69,12 @@ def _retrieve(query: str, scope: str = "admin", user_uid: str = "") -> Tuple[Lis
 
     top_chunks = rerank(query, candidates, top_n=5)
     top_confidence = top_chunks[0].get("rerank_score", 0.0) if top_chunks else 0.0
+    if top_confidence < _MIN_TOP_CONFIDENCE:
+        logger.info(
+            f"Top rerank score {top_confidence:.3f} below threshold "
+            f"{_MIN_TOP_CONFIDENCE} — refusing to answer"
+        )
+        return [], 0.0
     return top_chunks, top_confidence
 
 
@@ -73,7 +93,7 @@ def _sources_from(chunks: List[Dict]) -> List[Dict]:
     return sources
 
 
-def _log_query(user_id: str, query: str, answer: str, sources: List[Dict], confidence: float) -> str | None:
+def _log_query(user_id: str, query: str, answer: str, sources: List[Dict], confidence: float, thread_id: str | None = None) -> str | None:
     try:
         sb = get_supabase()
         record = {
@@ -83,7 +103,18 @@ def _log_query(user_id: str, query: str, answer: str, sources: List[Dict], confi
             "llm_response": answer,
             "confidence_score": confidence,
         }
-        result = sb.table("query_logs").insert(record).execute()
+        if thread_id:
+            record["thread_id"] = thread_id
+        try:
+            result = sb.table("query_logs").insert(record).execute()
+        except Exception as ins_exc:
+            # thread_id column not yet added (migration 005 pending) — retry without it
+            if thread_id and "thread_id" in str(ins_exc):
+                logger.warning("[DB] thread_id column missing — logging without thread link (run migration 005)")
+                record.pop("thread_id")
+                result = sb.table("query_logs").insert(record).execute()
+            else:
+                raise
         if result.data:
             return result.data[0]["id"]
     except Exception as exc:
@@ -92,7 +123,7 @@ def _log_query(user_id: str, query: str, answer: str, sources: List[Dict], confi
 
 
 # ── Blocking pipeline ─────────────────────────────────────────────────
-def run_rag_pipeline(query: str, user_id: str, scope: str = "admin") -> Dict:
+def run_rag_pipeline(query: str, user_id: str, scope: str = "admin", thread_id: str | None = None) -> Dict:
     logger.info(f"RAG pipeline started: '{query[:80]}' scope={scope}")
     key = _cache_key(query, scope, user_id)
 
@@ -100,7 +131,7 @@ def run_rag_pipeline(query: str, user_id: str, scope: str = "admin") -> Dict:
     if cached:
         logger.info("Cache hit — returning cached answer")
         query_log_id = _log_query(
-            user_id, query, cached["answer"], cached["sources"], cached["top_confidence"]
+            user_id, query, cached["answer"], cached["sources"], cached["top_confidence"], thread_id=thread_id
         )
         return {**cached, "query_log_id": query_log_id, "cached": True}
 
@@ -122,7 +153,11 @@ def run_rag_pipeline(query: str, user_id: str, scope: str = "admin") -> Dict:
     sources = _sources_from(top_chunks)
     top_confidence = round(top_confidence, 4)
 
-    query_log_id = _log_query(user_id, query, answer, sources, top_confidence)
+    if _is_escalation(answer):
+        sources = []
+        top_confidence = 0.0
+
+    query_log_id = _log_query(user_id, query, answer, sources, top_confidence, thread_id=thread_id)
 
     result = {
         "answer": answer,
@@ -136,7 +171,7 @@ def run_rag_pipeline(query: str, user_id: str, scope: str = "admin") -> Dict:
 
 
 # ── Streaming pipeline ────────────────────────────────────────────────
-def stream_rag_pipeline(query: str, user_id: str, scope: str = "admin") -> Iterator[Dict]:
+def stream_rag_pipeline(query: str, user_id: str, scope: str = "admin", thread_id: str | None = None) -> Iterator[Dict]:
     """Yield SSE-ready dicts: retrieval meta first, then answer tokens, then done event."""
     logger.info(f"RAG streaming started: '{query[:80]}' scope={scope}")
 
@@ -161,7 +196,16 @@ def stream_rag_pipeline(query: str, user_id: str, scope: str = "admin") -> Itera
 
     full_answer = "".join(buffer).strip()
     top_confidence = round(top_confidence, 4)
-    query_log_id = _log_query(user_id, query, full_answer, sources, top_confidence)
+
+    if _is_escalation(full_answer):
+        # LLM refused via gate-check — clear sources/confidence so storage
+        # and downstream consumers treat this as a true no-match. The UI
+        # already got a sources event; the frontend detects the sentinel
+        # and renders the empty-state card.
+        sources = []
+        top_confidence = 0.0
+
+    query_log_id = _log_query(user_id, query, full_answer, sources, top_confidence, thread_id=thread_id)
 
     _cache[_cache_key(query, scope, user_id)] = {
         "answer": full_answer,
