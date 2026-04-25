@@ -155,18 +155,18 @@ export default function Dashboard() {
 
   return (
     <AppLayout>
-      <div className="flex flex-col h-full">
+      <div className="flex flex-col h-full relative">
 
         {/* ── Chat messages area ── */}
-        <div className="flex-1 overflow-y-auto min-h-0">
+        <div className="flex-1 overflow-y-auto min-h-0 relative z-10 pb-40">
           {messages.length === 0 ? (
             /* Welcome / command center */
-            <div className="max-w-3xl mx-auto px-4 py-10">
+            <div className="max-w-4xl mx-auto px-4 pt-10 pb-20">
               <CommandCenter onQuickAction={handleQuickAction} />
             </div>
           ) : (
             /* Conversation */
-            <div className="max-w-3xl mx-auto px-4 py-6 space-y-5">
+            <div className="max-w-4xl mx-auto px-4 py-6 space-y-5">
               {messages.map(msg =>
                 msg.type === 'user' ? (
                   <UserMessage key={msg.id} text={msg.text} />
@@ -197,34 +197,40 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* ── Fixed input area at bottom ── */}
-        <div className="flex-shrink-0 border-t border-dark-800/60 bg-dark-950/95 backdrop-blur-xl px-4 pt-3 pb-4">
-          <div className="max-w-3xl mx-auto space-y-2">
+        {/* ── Floating Island Input ── */}
+        <div className="absolute bottom-6 left-0 right-0 px-4 pointer-events-none z-20">
+          <div className="max-w-4xl mx-auto pointer-events-auto">
+            <div className="glass-card p-3 shadow-[0_10px_40px_-10px_rgba(0,0,0,0.8)] border border-dark-700/80 bg-dark-900/80 backdrop-blur-2xl ring-1 ring-white/5 space-y-2 relative overflow-hidden">
+              {/* Subtle inner glow for the island */}
+              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[200px] h-[100px] bg-primary-500/10 blur-[40px] pointer-events-none" />
 
-            {/* Scope selector */}
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-[11px] text-dark-700 font-medium">Search in:</span>
-              {SCOPE_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  onClick={() => setScope(opt.value)}
-                  className={`px-3 py-1 rounded-lg text-xs font-medium transition-all duration-200 border ${
-                    scope === opt.value
-                      ? 'bg-primary-600/15 text-primary-400 border-primary-600/30'
-                      : 'bg-transparent text-dark-600 border-dark-800/60 hover:text-dark-400 hover:border-dark-700/60'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
+              {/* Scope selector */}
+              <div className="flex items-center gap-2 flex-wrap px-1 relative z-10">
+                <span className="text-[10px] text-dark-500 font-bold uppercase tracking-wider">Search in:</span>
+                {SCOPE_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    onClick={() => setScope(opt.value)}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all duration-200 border ${
+                      scope === opt.value
+                        ? 'bg-primary-600/20 text-primary-400 border-primary-500/40 shadow-sm shadow-primary-500/10'
+                        : 'bg-dark-950/50 text-dark-500 border-dark-800/60 hover:text-dark-300 hover:border-dark-700'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Query input */}
+              <div className="relative z-10">
+                <QueryInput
+                  ref={queryInputRef}
+                  onSubmit={handleQuery}
+                  loading={isWorking}
+                />
+              </div>
             </div>
-
-            {/* Query input */}
-            <QueryInput
-              ref={queryInputRef}
-              onSubmit={handleQuery}
-              loading={isWorking}
-            />
           </div>
         </div>
 
