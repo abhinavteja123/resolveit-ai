@@ -1,14 +1,54 @@
 import { useLocation } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useMotionValue, useSpring, useTransform } from 'framer-motion';
+import { useEffect } from 'react';
 import Sidebar from './Sidebar';
+import CommandPalette from './CommandPalette';
 
 export default function AppLayout({ children }) {
   const location = useLocation();
+  
+  // Magic Spotlight state
+  const mouseX = useMotionValue(0);
+  const mouseY = useMotionValue(0);
+  const smoothX = useSpring(mouseX, { stiffness: 500, damping: 50 });
+  const smoothY = useSpring(mouseY, { stiffness: 500, damping: 50 });
+
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      mouseX.set(e.clientX);
+      mouseY.set(e.clientY);
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    return () => window.removeEventListener('mousemove', handleMouseMove);
+  }, [mouseX, mouseY]);
 
   return (
     <div className="h-screen bg-dark-950 flex overflow-hidden relative">
       {/* Global Ambient Mesh */}
       <div className="absolute inset-0 bg-mesh opacity-50 pointer-events-none" />
+
+      {/* Magic Spotlight */}
+      <motion.div
+        className="pointer-events-none fixed inset-0 z-50 transition-opacity duration-300"
+        style={{
+          background: useTransform(
+            [smoothX, smoothY],
+            ([x, y]) => `radial-gradient(600px circle at ${x}px ${y}px, rgba(var(--primary-500), 0.05), transparent 40%)`
+          )
+        }}
+      />
+      <motion.div
+        className="pointer-events-none fixed inset-0 z-[100] mix-blend-screen opacity-30"
+        style={{
+          background: useTransform(
+            [smoothX, smoothY],
+            ([x, y]) => `radial-gradient(200px circle at ${x}px ${y}px, rgba(125, 211, 252, 0.15), transparent 40%)`
+          )
+        }}
+      />
+
+      {/* Universal Command Palette */}
+      <CommandPalette />
 
       <Sidebar />
       
