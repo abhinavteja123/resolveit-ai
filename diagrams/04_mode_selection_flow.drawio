@@ -1,0 +1,73 @@
+<mxfile host="app.diagrams.net" modified="2026-05-01T12:00:00.000Z" agent="ResolveIT-AI" version="24.0.0">
+  <diagram id="mode04" name="Mode Selection Flow">
+    <mxGraphModel dx="1422" dy="757" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="800" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="Response Mode Selection &amp; Pipeline Branching" style="text;html=1;align=center;fontSize=18;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="200" y="20" width="800" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ui_chips" value="Frontend mode chips (Dashboard.jsx)&#xa;Fast · Standard · Deep · ELI5 · Expert · Dry-run" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="350" y="80" width="500" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="payload" value="QueryRequest&#xa;{query, scope, thread_id,&#xa; mode, regenerate_of}" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontSize=10" vertex="1" parent="1">
+          <mxGeometry x="430" y="170" width="340" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="get_mode" value="get_mode(name)  →  ModeConfig dataclass&#xa;name · use_hyde · top_k · top_n · temperature · system_prompt · critique_retry&#xa;(unknown / None  →  fallback to 'standard')" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontSize=10;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="280" y="260" width="640" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- 6 branches -->
+        <mxCell id="m_fast" value="FAST&#xa;use_hyde = False&#xa;top_k = 6, top_n = 3&#xa;temp = 0.0&#xa;Prompt: 'Be terse'" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontSize=10" vertex="1" parent="1">
+          <mxGeometry x="40" y="380" width="180" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="m_std" value="STANDARD&#xa;use_hyde = True&#xa;top_k = 12, top_n = 5&#xa;temp = 0.2&#xa;Default prompt" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontSize=10" vertex="1" parent="1">
+          <mxGeometry x="240" y="380" width="180" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="m_deep" value="DEEP&#xa;use_hyde = True&#xa;top_k = 20, top_n = 8&#xa;temp = 0.2&#xa;critique_retry = True&#xa;Adds Root Cause + Verification" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontSize=10" vertex="1" parent="1">
+          <mxGeometry x="440" y="380" width="200" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="m_eli5" value="ELI5&#xa;use_hyde = True&#xa;top_k = 12, top_n = 5&#xa;temp = 0.3&#xa;Beginner prompt&#xa;explain jargon" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontSize=10" vertex="1" parent="1">
+          <mxGeometry x="660" y="380" width="180" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="m_exp" value="EXPERT&#xa;use_hyde = True&#xa;top_k = 12, top_n = 5&#xa;temp = 0.1&#xa;TL;DR + cmd-only steps" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontSize=10" vertex="1" parent="1">
+          <mxGeometry x="860" y="380" width="180" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="m_dry" value="DRY-RUN&#xa;use_hyde = True&#xa;top_k = 12, top_n = 5&#xa;temp = 0.1&#xa;Annotate cmds, Rollback section" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontSize=10" vertex="1" parent="1">
+          <mxGeometry x="1040" y="380" width="140" height="120" as="geometry" />
+        </mxCell>
+
+        <!-- Convergence -->
+        <mxCell id="pipe" value="rag/pipeline.py — single pipeline, branched configuration&#xa;Cache key includes mode → independent caching per mode" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontSize=10;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="280" y="540" width="640" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="response" value="QueryResponse + SSE done event&#xa;{answer, sources, top_confidence, mode, follow_ups, query_log_id, cached}" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontSize=10" vertex="1" parent="1">
+          <mxGeometry x="280" y="640" width="640" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- edges -->
+        <mxCell id="me1" style="endArrow=classic;html=1;rounded=0" edge="1" parent="1" source="ui_chips" target="payload"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me2" style="endArrow=classic;html=1;rounded=0" edge="1" parent="1" source="payload" target="get_mode"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me3" style="endArrow=classic;html=1;rounded=0" edge="1" parent="1" source="get_mode" target="m_fast"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me4" style="endArrow=classic;html=1;rounded=0" edge="1" parent="1" source="get_mode" target="m_std"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me5" style="endArrow=classic;html=1;rounded=0" edge="1" parent="1" source="get_mode" target="m_deep"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me6" style="endArrow=classic;html=1;rounded=0" edge="1" parent="1" source="get_mode" target="m_eli5"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me7" style="endArrow=classic;html=1;rounded=0" edge="1" parent="1" source="get_mode" target="m_exp"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me8" style="endArrow=classic;html=1;rounded=0" edge="1" parent="1" source="get_mode" target="m_dry"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me9" style="endArrow=classic;html=1;rounded=0" edge="1" parent="1" source="m_fast" target="pipe"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me10" style="endArrow=classic;html=1;rounded=0" edge="1" parent="1" source="m_std" target="pipe"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me11" style="endArrow=classic;html=1;rounded=0" edge="1" parent="1" source="m_deep" target="pipe"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me12" style="endArrow=classic;html=1;rounded=0" edge="1" parent="1" source="m_eli5" target="pipe"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me13" style="endArrow=classic;html=1;rounded=0" edge="1" parent="1" source="m_exp" target="pipe"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me14" style="endArrow=classic;html=1;rounded=0" edge="1" parent="1" source="m_dry" target="pipe"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me15" style="endArrow=classic;html=1;rounded=0" edge="1" parent="1" source="pipe" target="response"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

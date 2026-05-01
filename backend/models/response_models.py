@@ -9,6 +9,7 @@ class SourceInfo(BaseModel):
     filename: str
     section: str
     category: str
+    excerpt: Optional[str] = None
 
 
 class QueryResponse(BaseModel):
@@ -17,6 +18,8 @@ class QueryResponse(BaseModel):
     top_confidence: float
     query_log_id: Optional[str] = None
     cached: bool = False
+    mode: Optional[str] = None
+    follow_ups: List[str] = []
 
 
 class RunbookInfo(BaseModel):

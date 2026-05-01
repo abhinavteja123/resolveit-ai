@@ -26,7 +26,14 @@ async def query_runbooks(
         raise HTTPException(status_code=400, detail="Query cannot be empty")
 
     try:
-        result = run_rag_pipeline(body.query.strip(), user["uid"], scope=body.scope, thread_id=body.thread_id)
+        result = run_rag_pipeline(
+            body.query.strip(),
+            user["uid"],
+            scope=body.scope,
+            thread_id=body.thread_id,
+            mode=body.mode,
+            regenerate_of=body.regenerate_of,
+        )
         return QueryResponse(**result)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Pipeline error: {exc}")
@@ -39,13 +46,20 @@ async def query_runbooks_stream(
     body: QueryRequest,
     user: dict = Depends(get_current_user),
 ):
-    """SSE streaming variant — emits 'sources', 'token', 'done' events."""
+    """SSE streaming variant — emits 'mode', 'sources', 'token', 'done' events."""
     if not body.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
 
     def event_stream():
         try:
-            for event in stream_rag_pipeline(body.query.strip(), user["uid"], scope=body.scope, thread_id=body.thread_id):
+            for event in stream_rag_pipeline(
+                body.query.strip(),
+                user["uid"],
+                scope=body.scope,
+                thread_id=body.thread_id,
+                mode=body.mode,
+                regenerate_of=body.regenerate_of,
+            ):
                 payload = json.dumps(event["data"], default=str)
                 yield f"event: {event['event']}\ndata: {payload}\n\n"
         except Exception as exc:
@@ -85,6 +99,7 @@ async def get_shared_answer(query_log_id: str, user: dict = Depends(get_current_
             "sources": log.get("retrieved_sources") or [],
             "top_confidence": log.get("confidence_score") or 0.0,
             "query_log_id": str(log.get("id")),
+            "mode": log.get("mode"),
         }
     except HTTPException:
         raise

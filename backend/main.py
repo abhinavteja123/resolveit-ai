@@ -22,6 +22,7 @@ from routes.feedback import router as feedback_router
 from routes.history import router as history_router
 from routes.runbooks import router as runbooks_router
 from routes.bookmarks import router as bookmarks_router
+from routes.exports import router as exports_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,6 +84,7 @@ app.include_router(feedback_router)
 app.include_router(history_router)
 app.include_router(runbooks_router)
 app.include_router(bookmarks_router)
+app.include_router(exports_router)
 
 
 @app.get("/")

@@ -4,6 +4,9 @@ import { useAuth } from '../context/AuthContext';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
+const VALID_MODES = ['fast', 'standard', 'deep', 'eli5', 'expert', 'dryrun'];
+const normalizeMode = (m) => (VALID_MODES.includes(m) ? m : 'standard');
+
 export function useQuery() {
   const { token } = useAuth();
   const [result, setResult] = useState(null);
@@ -14,7 +17,8 @@ export function useQuery() {
   const abortRef = useRef(null);
 
   const submitQuery = useCallback(
-    async (queryText, scope = 'admin') => {
+    async (queryText, opts = {}) => {
+      const { scope = 'admin', mode = 'standard', threadId = null, regenerateOf = null } = opts;
       setLoading(true);
       setStreaming(false);
       setStreamingText('');
@@ -23,7 +27,13 @@ export function useQuery() {
       try {
         const res = await axios.post(
           `${API_BASE}/query`,
-          { query: queryText, scope },
+          {
+            query: queryText,
+            scope,
+            mode: normalizeMode(mode),
+            thread_id: threadId,
+            regenerate_of: regenerateOf,
+          },
           { headers: { Authorization: `Bearer ${token}` } }
         );
         setResult(res.data);
@@ -40,7 +50,8 @@ export function useQuery() {
   );
 
   const submitQueryStream = useCallback(
-    async (queryText, scope = 'admin', threadId = null) => {
+    async (queryText, opts = {}) => {
+      const { scope = 'admin', mode = 'standard', threadId = null, regenerateOf = null } = opts;
       if (abortRef.current) abortRef.current.abort();
       const controller = new AbortController();
       abortRef.current = controller;
@@ -53,6 +64,7 @@ export function useQuery() {
 
       let sources = [];
       let accText = '';
+      let activeMode = normalizeMode(mode);
 
       try {
         const response = await fetch(`${API_BASE}/query/stream`, {
@@ -61,7 +73,13 @@ export function useQuery() {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ query: queryText, scope, thread_id: threadId }),
+          body: JSON.stringify({
+            query: queryText,
+            scope,
+            mode: activeMode,
+            thread_id: threadId,
+            regenerate_of: regenerateOf,
+          }),
           signal: controller.signal,
         });
 
@@ -92,7 +110,9 @@ export function useQuery() {
               if (!raw) continue;
               try {
                 const parsed = JSON.parse(raw);
-                if (currentEvent === 'sources') {
+                if (currentEvent === 'mode') {
+                  if (parsed?.mode) activeMode = parsed.mode;
+                } else if (currentEvent === 'sources') {
                   sources = Array.isArray(parsed) ? parsed : [];
                 } else if (currentEvent === 'token') {
                   const chunk = typeof parsed === 'string' ? parsed : String(parsed);
@@ -105,6 +125,8 @@ export function useQuery() {
                     top_confidence: parsed.top_confidence ?? 0,
                     query_log_id: parsed.query_log_id ?? null,
                     cached: false,
+                    mode: parsed.mode ?? activeMode,
+                    follow_ups: Array.isArray(parsed.follow_ups) ? parsed.follow_ups : [],
                   });
                   setStreaming(false);
                 } else if (currentEvent === 'error' || parsed?.error) {

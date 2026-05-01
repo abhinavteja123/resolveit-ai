@@ -5,13 +5,22 @@ import QueryInput from '../components/QueryInput';
 import ResultCard from '../components/ResultCard';
 import CommandCenter from '../components/CommandCenter';
 import { useQuery } from '../hooks/useQuery';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Zap, Brain, Sparkles, Lightbulb, ShieldAlert, GraduationCap } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 const SCOPE_OPTIONS = [
   { value: 'admin', label: 'Admin Runbooks' },
   { value: 'mine',  label: 'My Runbooks' },
   { value: 'both',  label: 'Admin + Mine' },
+];
+
+const MODE_OPTIONS = [
+  { value: 'fast',     label: 'Fast',     icon: Zap,            hint: 'Skip HyDE · ~1s' },
+  { value: 'standard', label: 'Standard', icon: Sparkles,       hint: 'Default pipeline' },
+  { value: 'deep',     label: 'Deep',     icon: Brain,          hint: 'Wider recall + verify' },
+  { value: 'eli5',     label: 'ELI5',     icon: GraduationCap,  hint: 'Beginner-friendly' },
+  { value: 'expert',   label: 'Expert',   icon: Lightbulb,      hint: 'Concise SRE-grade' },
+  { value: 'dryrun',   label: 'Dry-run',  icon: ShieldAlert,    hint: 'Annotated + rollback' },
 ];
 
 function UserMessage({ text }) {
@@ -24,10 +33,16 @@ function UserMessage({ text }) {
   );
 }
 
-function AssistantMessage({ result, queryText, onFeedback }) {
+function AssistantMessage({ result, queryText, onFeedback, onRegenerate, onFollowUp }) {
   return (
     <div className="w-full">
-      <ResultCard result={result} onFeedback={onFeedback} queryText={queryText} />
+      <ResultCard
+        result={result}
+        onFeedback={onFeedback}
+        queryText={queryText}
+        onRegenerate={onRegenerate}
+        onFollowUp={onFollowUp}
+      />
     </div>
   );
 }
@@ -81,6 +96,7 @@ export default function Dashboard() {
   const location = useLocation();
   const [messages, setMessages] = useState([]);
   const [scope, setScope] = useState('admin');
+  const [mode, setMode] = useState('standard');
   const [threadId, setThreadId] = useState(null);
   const chatEndRef = useRef(null);
   const queryInputRef = useRef(null);
@@ -139,13 +155,17 @@ export default function Dashboard() {
     }
   }, [error, isWorking]);
 
-  const handleQuery = async (queryText) => {
-    setMessages(prev => [...prev, { id: Date.now(), type: 'user', text: queryText }]);
+  const runQuery = async (queryText, runOpts = {}) => {
     try {
-      await submitQueryStream(queryText, scope, threadId);
+      await submitQueryStream(queryText, { scope, mode, threadId, ...runOpts });
     } catch (err) {
       toast.error(err.message);
     }
+  };
+
+  const handleQuery = async (queryText) => {
+    setMessages(prev => [...prev, { id: Date.now(), type: 'user', text: queryText }]);
+    await runQuery(queryText);
   };
 
   const handleQuickAction = (prefilled) => {
@@ -153,12 +173,24 @@ export default function Dashboard() {
     queryInputRef.current?.focus?.();
   };
 
+  const handleRegenerate = async (queryText, regenerateMode, regenerateOf) => {
+    if (!queryText) return;
+    setMessages(prev => [...prev, { id: Date.now(), type: 'user', text: `🔄 ${queryText}` }]);
+    await runQuery(queryText, { mode: regenerateMode || mode, regenerateOf });
+  };
+
+  const handleFollowUp = async (followUpText) => {
+    if (!followUpText) return;
+    setMessages(prev => [...prev, { id: Date.now(), type: 'user', text: followUpText }]);
+    await runQuery(followUpText);
+  };
+
   return (
     <AppLayout>
       <div className="flex flex-col h-full relative">
 
         {/* ── Chat messages area ── */}
-        <div className="flex-1 overflow-y-auto min-h-0 relative z-10 pb-40">
+        <div className="flex-1 overflow-y-auto min-h-0 relative z-10 pb-56 sm:pb-48">
           {messages.length === 0 ? (
             /* Welcome / command center */
             <div className="max-w-4xl mx-auto px-4 pt-10 pb-20">
@@ -176,6 +208,10 @@ export default function Dashboard() {
                     result={msg.result}
                     queryText={msg.queryText}
                     onFeedback={submitFeedback}
+                    onRegenerate={(newMode) =>
+                      handleRegenerate(msg.queryText, newMode, msg.result?.query_log_id)
+                    }
+                    onFollowUp={handleFollowUp}
                   />
                 ) : (
                   <ErrorBubble key={msg.id} error={msg.text} />
@@ -203,6 +239,30 @@ export default function Dashboard() {
             <div className="glass-card p-3 shadow-[0_10px_40px_-10px_rgba(0,0,0,0.8)] border border-dark-700/80 bg-dark-900/80 backdrop-blur-2xl ring-1 ring-white/5 space-y-2 relative overflow-hidden">
               {/* Subtle inner glow for the island */}
               <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[200px] h-[100px] bg-primary-500/10 blur-[40px] pointer-events-none" />
+
+              {/* Mode picker */}
+              <div className="flex items-center gap-1.5 flex-wrap px-1 relative z-10">
+                <span className="text-[10px] text-dark-500 font-bold uppercase tracking-wider mr-0.5">Mode:</span>
+                {MODE_OPTIONS.map((opt) => {
+                  const Icon = opt.icon;
+                  const active = mode === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      onClick={() => setMode(opt.value)}
+                      title={opt.hint}
+                      className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold transition-all duration-200 border ${
+                        active
+                          ? 'bg-primary-600/20 text-primary-300 border-primary-500/40 shadow-sm shadow-primary-500/10'
+                          : 'bg-dark-950/50 text-dark-500 border-dark-800/60 hover:text-dark-300 hover:border-dark-700'
+                      }`}
+                    >
+                      <Icon className="w-3 h-3" />
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
 
               {/* Scope selector */}
               <div className="flex items-center gap-2 flex-wrap px-1 relative z-10">

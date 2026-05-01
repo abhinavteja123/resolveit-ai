@@ -6,7 +6,9 @@ import FeedbackButtons from './FeedbackButtons';
 import {
   FileText, Bookmark, Link2, Copy, Check,
   CheckCircle2, Circle, ChevronDown, ChevronUp,
-  LayoutList, AlignLeft, ShieldCheck, AlertTriangle, Info, Terminal
+  LayoutList, AlignLeft, ShieldCheck, AlertTriangle, Info, Terminal,
+  Download, RotateCw, Sparkles, MessageCircleQuestion,
+  Zap, Brain, Lightbulb, ShieldAlert, GraduationCap
 } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
@@ -121,10 +123,21 @@ const stepVariants = {
   visible: { opacity: 1, x: 0, transition: { duration: 0.3 } }
 };
 
-export default function ResultCard({ result, onFeedback, queryText = '' }) {
+const MODE_META = {
+  fast:     { icon: Zap,           label: 'Fast' },
+  standard: { icon: Sparkles,      label: 'Standard' },
+  deep:     { icon: Brain,         label: 'Deep' },
+  eli5:     { icon: GraduationCap, label: 'ELI5' },
+  expert:   { icon: Lightbulb,     label: 'Expert' },
+  dryrun:   { icon: ShieldAlert,   label: 'Dry-run' },
+};
+
+const REGEN_MODES = ['fast', 'standard', 'deep', 'eli5', 'expert', 'dryrun'];
+
+export default function ResultCard({ result, onFeedback, queryText = '', onRegenerate, onFollowUp }) {
   if (!result) return null;
 
-  const { answer, sources, top_confidence, query_log_id } = result;
+  const { answer, sources, top_confidence, query_log_id, mode, follow_ups } = result;
   const { token } = useAuth();
 
   const [wizardMode, setWizardMode] = useState(true);
@@ -133,6 +146,11 @@ export default function ResultCard({ result, onFeedback, queryText = '' }) {
   const [bookmarked, setBookmarked] = useState(false);
   const [bookmarking, setBookmarking] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [regenOpen, setRegenOpen] = useState(false);
+
+  const ModeIcon = mode && MODE_META[mode] ? MODE_META[mode].icon : null;
+  const modeLabel = mode && MODE_META[mode] ? MODE_META[mode].label : null;
+  const followUps = Array.isArray(follow_ups) ? follow_ups : [];
 
   // Animate confidence bar on mount
   const [confWidth, setConfWidth] = useState(0);
@@ -215,6 +233,37 @@ export default function ResultCard({ result, onFeedback, queryText = '' }) {
       .catch(() => toast.error('Copy failed'));
   };
 
+  const handleExportMarkdown = async () => {
+    if (!query_log_id) return;
+    try {
+      const res = await fetch(`${API_BASE}/export/${query_log_id}.md`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const filename =
+        res.headers.get('Content-Disposition')?.match(/filename="(.+?)"/)?.[1] ||
+        `${(queryText || 'answer').slice(0, 40).replace(/\s+/g, '-')}.md`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success('Markdown downloaded');
+    } catch {
+      toast.error('Export failed');
+    }
+  };
+
+  const handleRegenerate = (newMode) => {
+    setRegenOpen(false);
+    if (!onRegenerate) return;
+    onRegenerate(newMode);
+  };
+
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-4xl mx-auto">
       <div className="glass-card overflow-hidden">
@@ -229,8 +278,8 @@ export default function ResultCard({ result, onFeedback, queryText = '' }) {
           {/* Confidence badge */}
           <div className="flex items-center gap-3">
             <div className={`w-8 h-8 rounded-lg flex items-center justify-center shadow-inner ${
-              top_confidence >= 0.7 ? 'bg-emerald-500/10 border border-emerald-500/20 shadow-emerald-500/10' : 
-              top_confidence >= 0.4 ? 'bg-amber-500/10 border border-amber-500/20 shadow-amber-500/10' : 
+              top_confidence >= 0.7 ? 'bg-emerald-500/10 border border-emerald-500/20 shadow-emerald-500/10' :
+              top_confidence >= 0.4 ? 'bg-amber-500/10 border border-amber-500/20 shadow-amber-500/10' :
               'bg-red-500/10 border border-red-500/20 shadow-red-500/10'
             }`}>
               <ConfIcon className={`w-4 h-4 ${confIconColor}`} />
@@ -239,6 +288,15 @@ export default function ResultCard({ result, onFeedback, queryText = '' }) {
               <div className="flex items-center gap-2 mb-1">
                 <span className={`text-[10px] uppercase font-extrabold tracking-widest ${confIconColor}`}>{confidenceLabel} Confidence</span>
                 <span className="text-[10px] font-mono text-dark-500">{confidencePercent}%</span>
+                {ModeIcon && (
+                  <span
+                    className="ml-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-primary-500/10 border border-primary-500/20 text-[9px] uppercase tracking-widest text-primary-300 font-bold"
+                    title={`Generated in ${modeLabel} mode`}
+                  >
+                    <ModeIcon className="w-2.5 h-2.5" />
+                    {modeLabel}
+                  </span>
+                )}
               </div>
               <div className="w-32 h-1.5 bg-dark-800/80 rounded-full overflow-hidden shadow-inner">
                 <div className={`h-full rounded-full ${confidenceClass} transition-all duration-1000 ease-out`} style={{ width: `${confWidth}%` }} />
@@ -281,6 +339,53 @@ export default function ResultCard({ result, onFeedback, queryText = '' }) {
             >
               <Bookmark className={`w-4 h-4 ${bookmarked ? 'fill-primary-400' : ''}`} />
             </button>
+            <button
+              onClick={handleExportMarkdown}
+              disabled={!query_log_id}
+              className="p-2 rounded-lg text-dark-400 hover:text-dark-100 hover:bg-dark-800 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+              title="Download as Markdown"
+            >
+              <Download className="w-4 h-4" />
+            </button>
+            {onRegenerate && (
+              <div className="relative">
+                <button
+                  onClick={() => setRegenOpen(o => !o)}
+                  className="p-2 rounded-lg text-dark-400 hover:text-dark-100 hover:bg-dark-800 transition-all"
+                  title="Try again in another mode"
+                >
+                  <RotateCw className="w-4 h-4" />
+                </button>
+                <AnimatePresence>
+                  {regenOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -4 }}
+                      className="absolute right-0 mt-2 w-44 z-30 rounded-xl border border-dark-700/80 bg-dark-900/95 backdrop-blur-md shadow-xl py-1"
+                    >
+                      <div className="px-3 py-1.5 text-[10px] uppercase tracking-widest text-dark-500 font-bold">
+                        Regenerate as
+                      </div>
+                      {REGEN_MODES.map((m) => {
+                        const Meta = MODE_META[m];
+                        const Icon = Meta?.icon;
+                        return (
+                          <button
+                            key={m}
+                            onClick={() => handleRegenerate(m)}
+                            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-dark-200 hover:bg-primary-500/10 hover:text-primary-300 transition-colors"
+                          >
+                            {Icon && <Icon className="w-3.5 h-3.5" />}
+                            {Meta?.label || m}
+                          </button>
+                        );
+                      })}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            )}
           </div>
         </div>
 
@@ -436,6 +541,31 @@ export default function ResultCard({ result, onFeedback, queryText = '' }) {
                 <motion.div key={i} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.1 }}>
                   <SourceBadge source={source} />
                 </motion.div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── Follow-up suggestions ── */}
+        {onFollowUp && followUps.length > 0 && (
+          <div className="px-6 pt-5 pb-2 border-t border-dark-800/40 bg-dark-900/30">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-6 h-6 rounded-md bg-primary-500/10 flex items-center justify-center border border-primary-500/20">
+                <MessageCircleQuestion className="w-3.5 h-3.5 text-primary-300" />
+              </div>
+              <span className="text-[11px] font-bold text-primary-300 uppercase tracking-widest">
+                Suggested Follow-ups
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {followUps.map((q, i) => (
+                <button
+                  key={i}
+                  onClick={() => onFollowUp(q)}
+                  className="text-left max-w-full text-[12px] leading-snug px-3 py-2 rounded-xl border border-dark-700/70 bg-dark-950/40 text-dark-300 hover:text-primary-200 hover:border-primary-500/40 hover:bg-primary-500/5 transition-all"
+                >
+                  {q}
+                </button>
               ))}
             </div>
           </div>

@@ -1,0 +1,126 @@
+<mxfile host="app.diagrams.net" modified="2026-05-01T12:00:00.000Z" agent="ResolveIT-AI" version="24.0.0">
+  <diagram id="sse05" name="SSE Sequence">
+    <mxGraphModel dx="1422" dy="757" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="Streaming Query — SSE Sequence Diagram" style="text;html=1;align=center;fontSize=18;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="200" y="20" width="700" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Lifelines -->
+        <mxCell id="ll_user" value="User" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontStyle=1;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="60" y="80" width="100" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="ll_ui" value="React UI&#xa;(Dashboard)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontStyle=1;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="220" y="80" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="ll_hook" value="useQuery hook" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontStyle=1;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="380" y="80" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="ll_api" value="FastAPI&#xa;/query/stream" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontStyle=1;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="540" y="80" width="140" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="ll_pipe" value="RAG pipeline&#xa;(stream_rag_pipeline)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontStyle=1;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="710" y="80" width="180" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="ll_gem" value="Gemini API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontStyle=1;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="930" y="80" width="120" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Vertical lifelines (dashed) -->
+        <mxCell id="lv_user" style="endArrow=none;html=1;dashed=1;strokeColor=#000000" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="110" y="120" as="sourcePoint"/><mxPoint x="110" y="850" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="lv_ui" style="endArrow=none;html=1;dashed=1;strokeColor=#000000" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="280" y="120" as="sourcePoint"/><mxPoint x="280" y="850" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="lv_hook" style="endArrow=none;html=1;dashed=1;strokeColor=#000000" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="440" y="120" as="sourcePoint"/><mxPoint x="440" y="850" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="lv_api" style="endArrow=none;html=1;dashed=1;strokeColor=#000000" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="610" y="120" as="sourcePoint"/><mxPoint x="610" y="850" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="lv_pipe" style="endArrow=none;html=1;dashed=1;strokeColor=#000000" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="800" y="120" as="sourcePoint"/><mxPoint x="800" y="850" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="lv_gem" style="endArrow=none;html=1;dashed=1;strokeColor=#000000" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="990" y="120" as="sourcePoint"/><mxPoint x="990" y="850" as="targetPoint"/></mxGeometry>
+        </mxCell>
+
+        <!-- Messages -->
+        <mxCell id="msg1" value="types query, picks mode" style="endArrow=classic;html=1;strokeColor=#000000;fontSize=10" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="110" y="160" as="sourcePoint"/><mxPoint x="280" y="160" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="msg2" value="submitQueryStream({query,scope,mode,threadId})" style="endArrow=classic;html=1;strokeColor=#000000;fontSize=9" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="280" y="200" as="sourcePoint"/><mxPoint x="440" y="200" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="msg3" value="POST /query/stream  (Bearer JWT)" style="endArrow=classic;html=1;strokeColor=#000000;fontSize=9" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="440" y="240" as="sourcePoint"/><mxPoint x="610" y="240" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="msg4" value="verify JWT (firebase_admin)" style="endArrow=classic;html=1;strokeColor=#000000;dashed=1;fontSize=9" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="610" y="270" as="sourcePoint"/><mxPoint x="610" y="290" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="msg5" value="stream_rag_pipeline(query,user,scope,mode,...)" style="endArrow=classic;html=1;strokeColor=#000000;fontSize=9" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="610" y="310" as="sourcePoint"/><mxPoint x="800" y="310" as="targetPoint"/></mxGeometry>
+        </mxCell>
+
+        <!-- Mode event -->
+        <mxCell id="msg6" value="event: mode  data: {&quot;mode&quot;:&quot;deep&quot;}" style="endArrow=classic;html=1;strokeColor=#000000;fontSize=9" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="610" y="350" as="sourcePoint"/><mxPoint x="440" y="350" as="targetPoint"/></mxGeometry>
+        </mxCell>
+
+        <!-- HyDE -->
+        <mxCell id="msg7" value="hyde_expand(query)" style="endArrow=classic;html=1;strokeColor=#000000;fontSize=9" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="800" y="380" as="sourcePoint"/><mxPoint x="990" y="380" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="msg8" value="hypothetical passage" style="endArrow=classic;html=1;strokeColor=#000000;dashed=1;fontSize=9" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="990" y="410" as="sourcePoint"/><mxPoint x="800" y="410" as="targetPoint"/></mxGeometry>
+        </mxCell>
+
+        <!-- Embed + hybrid + rerank (self) -->
+        <mxCell id="msg9" value="embed → FAISS + BM25 → RRF → rerank → gate" style="endArrow=classic;html=1;strokeColor=#000000;dashed=1;fontSize=9" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="800" y="440" as="sourcePoint"/><mxPoint x="800" y="470" as="targetPoint"/></mxGeometry>
+        </mxCell>
+
+        <!-- Sources event -->
+        <mxCell id="msg10" value="event: sources  data: [{filename, section, excerpt}, ...]" style="endArrow=classic;html=1;strokeColor=#000000;fontSize=9" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="800" y="490" as="sourcePoint"/><mxPoint x="440" y="490" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="msg10b" value="render source badges" style="endArrow=classic;html=1;strokeColor=#000000;fontSize=9" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="440" y="510" as="sourcePoint"/><mxPoint x="280" y="510" as="targetPoint"/></mxGeometry>
+        </mxCell>
+
+        <!-- Token loop -->
+        <mxCell id="loop_box" value="loop  [for each token from Gemini]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#000000;fontSize=10;fontStyle=2;align=left;verticalAlign=top" vertex="1" parent="1">
+          <mxGeometry x="430" y="540" width="540" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="msg11" value="generate_content_stream(prompt,temp)" style="endArrow=classic;html=1;strokeColor=#000000;fontSize=9" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="800" y="570" as="sourcePoint"/><mxPoint x="990" y="570" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="msg12" value="token chunk" style="endArrow=classic;html=1;strokeColor=#000000;dashed=1;fontSize=9" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="990" y="600" as="sourcePoint"/><mxPoint x="800" y="600" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="msg13" value="event: token  data: &quot;Step 1...&quot;" style="endArrow=classic;html=1;strokeColor=#000000;fontSize=9" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="610" y="630" as="sourcePoint"/><mxPoint x="280" y="630" as="targetPoint"/></mxGeometry>
+        </mxCell>
+
+        <!-- Follow-ups + log + done -->
+        <mxCell id="msg14" value="generate_followups()" style="endArrow=classic;html=1;strokeColor=#000000;fontSize=9" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="800" y="690" as="sourcePoint"/><mxPoint x="990" y="690" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="msg15" value="log to query_logs (mode, regenerate_of), TTLCache.set" style="endArrow=classic;html=1;strokeColor=#000000;dashed=1;fontSize=9" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="800" y="730" as="sourcePoint"/><mxPoint x="800" y="760" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="msg16" value="event: done  data: {query_log_id, top_confidence, mode, follow_ups}" style="endArrow=classic;html=1;strokeColor=#000000;fontSize=9" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="800" y="790" as="sourcePoint"/><mxPoint x="280" y="790" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="msg17" value="setResult(...) → render answer + chips" style="endArrow=classic;html=1;strokeColor=#000000;fontSize=9" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="280" y="820" as="sourcePoint"/><mxPoint x="110" y="820" as="targetPoint"/></mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

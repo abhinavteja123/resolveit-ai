@@ -132,7 +132,7 @@ def hyde_expand(query: str) -> str:
 
 
 # ── Prompt builder ────────────────────────────────────────────────────
-def _build_prompt(query: str, context_chunks: List[Dict]) -> str:
+def _build_prompt(query: str, context_chunks: List[Dict], system_prompt: str | None = None) -> str:
     parts: list[str] = []
     for i, chunk in enumerate(context_chunks, 1):
         source = chunk.get("source", "unknown")
@@ -140,20 +140,26 @@ def _build_prompt(query: str, context_chunks: List[Dict]) -> str:
         text = chunk.get("text", "")
         parts.append(f"[{i}] Source: {source} | Section: {section}\n{text}")
     context_block = "\n\n".join(parts)
+    sp = system_prompt if system_prompt else _SYSTEM_PROMPT
     return (
-        f"{_SYSTEM_PROMPT}\n\n"
+        f"{sp}\n\n"
         f"--- RUNBOOK EXCERPTS ---\n{context_block}\n-----------------------\n\n"
         f"ENGINEER'S QUESTION: {query}\n\nRESPONSE:"
     )
 
 
 # ── One-shot generation ───────────────────────────────────────────────
-def generate_resolution(query: str, context_chunks: List[Dict]) -> str:
+def generate_resolution(
+    query: str,
+    context_chunks: List[Dict],
+    system_prompt: str | None = None,
+    temperature: float = 0.2,
+) -> str:
     client = _get_client()
     if client is None:
         return "[Gemini API key not configured — cannot generate response]"
 
-    prompt = _build_prompt(query, context_chunks)
+    prompt = _build_prompt(query, context_chunks, system_prompt=system_prompt)
     models = _model_list()
 
     for i, model in enumerate(models):
@@ -163,7 +169,7 @@ def generate_resolution(query: str, context_chunks: List[Dict]) -> str:
             resp = client.models.generate_content(
                 model=model,
                 contents=prompt,
-                config=types.GenerateContentConfig(temperature=0.2),
+                config=types.GenerateContentConfig(temperature=temperature),
             )
             text = (resp.text or "").strip()
             logger.info(f"[Gemini] Response: {len(text)} chars via {model}")
@@ -180,14 +186,19 @@ def generate_resolution(query: str, context_chunks: List[Dict]) -> str:
 
 
 # ── Streaming generation (SSE) ────────────────────────────────────────
-def stream_resolution(query: str, context_chunks: List[Dict]) -> Iterator[str]:
+def stream_resolution(
+    query: str,
+    context_chunks: List[Dict],
+    system_prompt: str | None = None,
+    temperature: float = 0.2,
+) -> Iterator[str]:
     """Yield text chunks, automatically falling back on 503 / overload errors."""
     client = _get_client()
     if client is None:
         yield "[Gemini API key not configured]"
         return
 
-    prompt = _build_prompt(query, context_chunks)
+    prompt = _build_prompt(query, context_chunks, system_prompt=system_prompt)
     models = _model_list()
 
     yielded_any = False
@@ -199,7 +210,7 @@ def stream_resolution(query: str, context_chunks: List[Dict]) -> Iterator[str]:
             stream = client.models.generate_content_stream(
                 model=model,
                 contents=prompt,
-                config=types.GenerateContentConfig(temperature=0.2),
+                config=types.GenerateContentConfig(temperature=temperature),
             )
             for piece in stream:
                 if piece.text:
@@ -219,3 +230,46 @@ def stream_resolution(query: str, context_chunks: List[Dict]) -> Iterator[str]:
 
     if not yielded_any:
         yield "[All Gemini models unavailable — please try again later]"
+
+
+# ── Follow-up question generation ─────────────────────────────────────
+def generate_followups(query: str, answer: str, prompt_template: str, n: int = 3) -> List[str]:
+    """Ask Gemini for n short follow-up questions. Returns [] on any failure.
+
+    Best-effort: a follow-up call is a UX nicety, not load-bearing. We swallow
+    overload errors silently rather than crash the main answer flow.
+    """
+    client = _get_client()
+    if client is None or not answer:
+        return []
+
+    prompt = prompt_template.format(query=query, answer=answer)
+
+    for i, model in enumerate(_model_list()):
+        try:
+            resp = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.4,
+                    max_output_tokens=256,
+                ),
+            )
+            text = (resp.text or "").strip()
+            if not text:
+                return []
+            lines = [
+                l.strip().lstrip("0123456789.-) ").strip()
+                for l in text.splitlines()
+                if l.strip()
+            ]
+            # Keep only lines that look like questions; trim to n
+            qs = [l for l in lines if l.endswith("?") and 5 < len(l) <= 140][:n]
+            return qs
+        except Exception as exc:
+            if i < len(_model_list()) - 1 and _is_overload(exc):
+                continue
+            logger.warning(f"[Gemini] follow-up error on {model}: {exc}")
+            return []
+
+    return []
