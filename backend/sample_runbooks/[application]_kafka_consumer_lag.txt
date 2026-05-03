@@ -1,0 +1,176 @@
+## Kafka Consumer Lag Spike — Application Runbook
+
+### Problem Description
+A Kafka consumer group is falling behind on one or more topic partitions. The lag (broker high-water-mark minus consumer current offset) is growing instead of holding flat. This means downstream systems are processing stale events, alerts are firing late, and the backlog will eventually breach the broker's `retention.ms` window — causing **silent data loss** when the broker deletes log segments the consumer has not yet read.
+
+### Symptoms
+- Monitoring alert: `kafka_consumergroup_lag{group="orders-processor"} > 100000`
+- `kafka-consumer-groups.sh --describe` shows `LAG` column climbing on one or more partitions
+- Consumer logs show `CommitFailedException: Offsets cannot be committed because consumer's session timed out`
+- Frequent rebalance log lines: `Attempting to rejoin group ... triggered partitions revocation`
+- Downstream API or DB shows event processing delay (e.g., orders confirmed several minutes after they were placed)
+- CPU on consumer hosts is low — consumers are waiting, not stuck on processing
+- Producer rate is roughly normal — this is a consumer-side problem, not an over-production problem
+
+### Diagnostic Steps
+
+1. **Quantify the lag — per partition, per consumer:**
+   ```bash
+   kafka-consumer-groups.sh \
+     --bootstrap-server kafka.internal:9092 \
+     --describe --group orders-processor
+   # Columns: TOPIC PARTITION CURRENT-OFFSET LOG-END-OFFSET LAG CONSUMER-ID HOST CLIENT-ID
+   ```
+   Look for: lag concentrated on one partition (skew) vs. all partitions (consumer slow overall).
+
+2. **Confirm it's growing, not stable:**
+   ```bash
+   while true; do
+     date '+%F %T'
+     kafka-consumer-groups.sh --bootstrap-server kafka:9092 \
+       --describe --group orders-processor \
+       | awk 'NR>1 { sum+=$5 } END { print "TOTAL LAG:", sum }'
+     sleep 30
+   done
+   ```
+
+3. **Check whether the consumer group has live members:**
+   ```bash
+   kafka-consumer-groups.sh --bootstrap-server kafka:9092 \
+     --describe --group orders-processor --members
+   # Empty members list = nobody is consuming → all messages are accumulating
+   ```
+
+4. **Inspect consumer process health:**
+   ```bash
+   # On consumer host:
+   systemctl status orders-processor
+   journalctl -u orders-processor --since '15 minutes ago' | tail -100
+   # Check the JVM is not paused on GC:
+   jstat -gcutil $(pgrep -f orders-processor) 1000 5
+   ```
+
+5. **Check broker side — is the topic over-partitioned for this consumer count?**
+   ```bash
+   kafka-topics.sh --bootstrap-server kafka:9092 \
+     --describe --topic orders
+   # Partitions: 24, current group has 3 members → each member owns 8 partitions
+   ```
+
+6. **Look for partition skew (one partition much hotter than others):**
+   ```bash
+   kafka-run-class.sh kafka.tools.GetOffsetShell \
+     --broker-list kafka:9092 --topic orders --time -1
+   # Compare offset deltas between snapshots — uneven growth = skewed key hashing
+   ```
+
+7. **Check broker retention vs current lag:**
+   ```bash
+   kafka-configs.sh --bootstrap-server kafka:9092 \
+     --entity-type topics --entity-name orders --describe
+   # retention.ms or retention.bytes — if lag > retention, you will lose data
+   ```
+
+8. **Inspect consumer config:**
+   ```bash
+   # Verify these in the consumer's config file or runtime args:
+   # max.poll.records      — too high = long gap between poll() → group rebalance
+   # max.poll.interval.ms  — must be > worst-case batch processing time
+   # session.timeout.ms    — too low = false dead-consumer detections
+   # fetch.max.bytes       — too low = many small fetches under high traffic
+   ```
+
+### Resolution Steps
+
+1. **Restart a hung consumer process:**
+   ```bash
+   sudo systemctl restart orders-processor
+   # Or in Kubernetes:
+   kubectl rollout restart deployment/orders-processor -n events
+   ```
+   This rejoins the group and triggers a rebalance; lag will start dropping if processing was simply stalled.
+
+2. **Scale out consumers (cannot exceed partition count):**
+   ```bash
+   kubectl scale deployment/orders-processor -n events --replicas=8
+   # Verify each new pod gets partitions:
+   kafka-consumer-groups.sh --bootstrap-server kafka:9092 \
+     --describe --group orders-processor --members
+   ```
+   If you already have one consumer per partition, scaling further does nothing — partitions are the unit of parallelism.
+
+3. **Increase partitions on the topic (only if more parallelism is needed long-term):**
+   ```bash
+   kafka-topics.sh --bootstrap-server kafka:9092 \
+     --alter --topic orders --partitions 48
+   ```
+   Warning: this rebalances key→partition mapping for new keys; existing keys keep their old partition.
+
+4. **Tune consumer config for slow processors:**
+   ```properties
+   # consumer.properties
+   max.poll.interval.ms=600000     # 10 min — must be > slowest batch
+   max.poll.records=100            # smaller batches = more frequent commits
+   session.timeout.ms=30000
+   heartbeat.interval.ms=10000
+   fetch.max.bytes=10485760        # 10 MB
+   enable.auto.commit=false        # commit manually after successful processing
+   ```
+
+5. **Skip the backlog if the data is safely re-derivable (DESTRUCTIVE — coordinate first):**
+   ```bash
+   # Reset consumer group to the latest offset (drops all unprocessed events):
+   kafka-consumer-groups.sh --bootstrap-server kafka:9092 \
+     --group orders-processor --topic orders \
+     --reset-offsets --to-latest --execute
+   # Or replay from a specific timestamp:
+   kafka-consumer-groups.sh --bootstrap-server kafka:9092 \
+     --group orders-processor --topic orders \
+     --reset-offsets --to-datetime 2026-05-01T12:00:00.000 --execute
+   ```
+   Requires the consumer group to be **stopped** before reset.
+
+6. **Move slow side-effects out of the consumer hot path:**
+   - Batch DB inserts (e.g., 500 rows per `executeBatch()` instead of one per record)
+   - Push expensive enrichment to a downstream worker fed by another topic
+   - Use async/non-blocking IO for any HTTP call inside the handler
+
+7. **Increase broker retention temporarily so you don't lose data while catching up:**
+   ```bash
+   kafka-configs.sh --bootstrap-server kafka:9092 \
+     --entity-type topics --entity-name orders \
+     --alter --add-config retention.ms=259200000   # 3 days
+   # Revert after backlog is cleared:
+   kafka-configs.sh --bootstrap-server kafka:9092 \
+     --entity-type topics --entity-name orders \
+     --alter --delete-config retention.ms
+   ```
+
+8. **For partition skew — change the producer's keying strategy:**
+   - Hot key (e.g., one customer producing 90% of events) → spread across N "virtual" partitions by suffixing the key with `key + ":" + (counter % 8)`
+   - Or switch to round-robin partitioning when ordering per key isn't required
+
+9. **Verify recovery:**
+   ```bash
+   # Watch the lag drop:
+   watch -n 5 'kafka-consumer-groups.sh --bootstrap-server kafka:9092 \
+     --describe --group orders-processor | awk "NR>1 {sum+=\$5} END {print \"LAG:\", sum}"'
+   ```
+
+### Escalation
+If lag keeps growing after consumer restart and scale-out, escalate to the data-platform team with:
+- `kafka-consumer-groups.sh --describe` output snapshots taken 5 minutes apart
+- Consumer process logs (`journalctl -u orders-processor`) covering the spike
+- Topic config (`kafka-configs.sh ... --describe`)
+- Producer rate over the last hour
+- Whether a deploy of the consumer happened in the last 24 h
+- Approximate worst-case per-message processing time
+
+### Prevention
+- Alert on **lag growth rate**, not just absolute lag: `delta(kafka_consumergroup_lag[5m]) > 0` for 10 minutes
+- Set retention >= 2× expected worst-case backlog window
+- Keep 1.5× to 2× the partition count vs steady-state consumer count for headroom
+- Run a load test that produces 2× peak traffic and confirms the consumer keeps up
+- Use `enable.auto.commit=false` and commit only after the side-effects succeed (at-least-once)
+- Monitor consumer GC pauses; long pauses cause `max.poll.interval.ms` violations and rebalances
+- Page on `under_replicated_partitions > 0` to catch broker issues before they become consumer issues

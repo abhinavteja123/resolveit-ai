@@ -1,0 +1,191 @@
+## Kubernetes Pod CrashLoopBackOff — Other Runbook
+
+### Problem Description
+A pod is stuck in `CrashLoopBackOff`: Kubernetes starts the container, the main process exits non-zero or fails its liveness probe, the kubelet restarts it, and the cycle repeats with exponentially increasing back-off (10s → 20s → 40s … capped at 5 min). The Deployment never reaches `Available` replicas. Service traffic is either zero (no Ready endpoints) or being absorbed by the remaining healthy pods, often pushing them into the same failure mode.
+
+### Symptoms
+- `kubectl get pods` shows `STATUS = CrashLoopBackOff` and `RESTARTS` climbing every minute
+- `kubectl describe pod` events show repeated `Started`, `Killing`, `BackOff`
+- `kubectl get deployment` reports `READY 0/3` or `1/3`
+- Service endpoints are empty: `kubectl get endpoints myapp -o yaml` has `subsets: []`
+- Downstream alerts fire because the service is returning 5xx or timing out
+- HPA target metric is `unknown` because pods never report metrics
+- Sometimes correlates with a recent `kubectl rollout` or ConfigMap edit
+
+### Diagnostic Steps
+
+1. **Get the basics:**
+   ```bash
+   kubectl get pods -n myns -l app=myapp -o wide
+   kubectl describe pod -n myns <pod-name> | tail -50
+   ```
+   Look at the `Events` block at the bottom — it usually names the failure (ImagePullBackOff, OOMKilled, liveness failed, exit code N).
+
+2. **Inspect the most recent crash logs:**
+   ```bash
+   kubectl logs -n myns <pod> --previous          # logs from the last terminated container
+   kubectl logs -n myns <pod>                     # current container logs (may be empty if it crashes too fast)
+   kubectl logs -n myns <pod> -c <init-container> # init containers, if multi-container
+   ```
+
+3. **Check the container exit reason — OOMKilled is the most common silent killer:**
+   ```bash
+   kubectl get pod -n myns <pod> -o jsonpath='{.status.containerStatuses[*].lastState}' | jq
+   # Look for: "terminated": { "reason": "OOMKilled", "exitCode": 137 }
+   ```
+   Exit-code cheat sheet:
+   - `137` = OOMKilled (memory limit hit)
+   - `139` = SIGSEGV (segfault)
+   - `143` = SIGTERM (graceful shutdown forced by liveness)
+   - `1` = generic application error → check stdout/stderr
+
+4. **Check for image-pull failures:**
+   ```bash
+   kubectl describe pod -n myns <pod> | grep -A2 -iE 'imagepull|errimagepull|invalidimage'
+   # Common: wrong tag, missing imagePullSecret, registry auth expired
+   ```
+
+5. **Validate liveness/readiness probe definitions vs reality:**
+   ```bash
+   kubectl get pod -n myns <pod> -o jsonpath='{.spec.containers[*].livenessProbe}' | jq
+   # Then test the probe path manually:
+   kubectl run debug --rm -it --image=curlimages/curl --restart=Never -- \
+     curl -v http://<podIP>:8080/healthz
+   ```
+
+6. **Check the ConfigMap / Secret the pod depends on actually exists:**
+   ```bash
+   kubectl get configmap -n myns
+   kubectl get secret    -n myns
+   kubectl describe pod -n myns <pod> | grep -A2 'Mounts:'
+   ```
+
+7. **Look for resource pressure on the node:**
+   ```bash
+   kubectl top nodes
+   kubectl describe node <node-name> | grep -A5 -iE 'pressure|allocated'
+   # Conditions: MemoryPressure, DiskPressure, PIDPressure
+   ```
+
+8. **Verify the image actually contains what you think it does:**
+   ```bash
+   kubectl debug -n myns <pod> --image=busybox -it -- sh
+   # Or run the image locally:
+   docker run --rm -it myregistry/myapp:1.4.2 sh
+   ```
+
+9. **Check init container failure (often masked by the main container also failing):**
+   ```bash
+   kubectl get pod -n myns <pod> -o jsonpath='{.status.initContainerStatuses[*]}' | jq
+   ```
+
+### Resolution Steps
+
+1. **Roll back to the previous known-good revision (fastest fix during an incident):**
+   ```bash
+   kubectl rollout history deployment/myapp -n myns
+   kubectl rollout undo deployment/myapp -n myns
+   # Or pin to a specific revision:
+   kubectl rollout undo deployment/myapp -n myns --to-revision=7
+   kubectl rollout status deployment/myapp -n myns
+   ```
+
+2. **Fix OOMKilled by raising the memory limit:**
+   ```bash
+   kubectl set resources deployment/myapp -n myns \
+     --requests=memory=512Mi --limits=memory=1Gi
+   # Verify:
+   kubectl get pod -n myns <new-pod> -o jsonpath='{.spec.containers[*].resources}' | jq
+   ```
+   If raising the limit doesn't help, the app likely has a real memory leak — see the memory-leak runbook.
+
+3. **Fix wrong image tag:**
+   ```bash
+   kubectl set image deployment/myapp -n myns myapp=myregistry/myapp:1.4.1
+   kubectl rollout status deployment/myapp -n myns
+   ```
+
+4. **Fix missing imagePullSecret:**
+   ```bash
+   kubectl create secret docker-registry regcred -n myns \
+     --docker-server=myregistry.example.com \
+     --docker-username='<user>' \
+     --docker-password='<token>' \
+     --docker-email='ops@example.com'
+   kubectl patch sa default -n myns -p '{"imagePullSecrets":[{"name":"regcred"}]}'
+   kubectl rollout restart deployment/myapp -n myns
+   ```
+
+5. **Relax over-aggressive liveness probes that kill the app during slow startup:**
+   ```yaml
+   # deployment.yaml
+   spec:
+     template:
+       spec:
+         containers:
+         - name: myapp
+           startupProbe:                # <-- prefer this for slow boots
+             httpGet: { path: /healthz, port: 8080 }
+             failureThreshold: 30
+             periodSeconds: 5           # 30 × 5s = 2.5 min grace
+           livenessProbe:
+             httpGet: { path: /healthz, port: 8080 }
+             initialDelaySeconds: 60
+             periodSeconds: 15
+             timeoutSeconds: 3
+             failureThreshold: 3
+   ```
+   ```bash
+   kubectl apply -f deployment.yaml
+   ```
+
+6. **Repair a missing ConfigMap or Secret:**
+   ```bash
+   kubectl create configmap myapp-cfg -n myns \
+     --from-file=app.conf=./app.conf --dry-run=client -o yaml | kubectl apply -f -
+   kubectl rollout restart deployment/myapp -n myns
+   ```
+
+7. **Pause the deployment while you debug, so failed pods stop respawning:**
+   ```bash
+   kubectl rollout pause deployment/myapp -n myns
+   # Resume when ready:
+   kubectl rollout resume deployment/myapp -n myns
+   ```
+
+8. **Drop into a running pod for live debugging (ephemeral container):**
+   ```bash
+   kubectl debug -n myns <pod> -it --image=busybox --target=myapp
+   ```
+
+9. **Cordon a bad node if the issue is node-local (e.g., disk full, kernel bug):**
+   ```bash
+   kubectl cordon <node>
+   kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
+   ```
+
+10. **Capture artifacts before deleting the pod (for engineering):**
+    ```bash
+    kubectl logs -n myns <pod> --previous > /tmp/myapp-crash-$(date +%s).log
+    kubectl describe pod -n myns <pod> > /tmp/myapp-describe-$(date +%s).txt
+    kubectl get pod -n myns <pod> -o yaml > /tmp/myapp-spec-$(date +%s).yaml
+    ```
+
+### Escalation
+If the pod still crashes after a rollback to the prior revision, escalate to the application team with:
+- `kubectl logs --previous` output covering at least one full crash cycle
+- `kubectl describe pod` output (especially the Events block and exit code)
+- The full pod spec from `kubectl get pod -o yaml`
+- Recent ConfigMap / Secret changes (`kubectl get configmap -o yaml | diff` against last week)
+- Whether the problem reproduces on a fresh namespace with the same manifests
+- If OOMKilled: a heap dump from a pre-crash pod if the app supports `kill -USR1` style triggers
+
+### Prevention
+- Always declare both `resources.requests` and `resources.limits` on every container
+- Use `startupProbe` for apps with > 30 s boot time — don't rely on `initialDelaySeconds`
+- Run `kubectl rollout status --timeout=10m` in CI/CD; fail the deploy if it doesn't reach Ready
+- Use `maxUnavailable: 0` on `RollingUpdate` strategy so a broken release never takes the service to zero replicas
+- Pin image tags to immutable digests (`@sha256:...`) in production
+- Run a `PodDisruptionBudget` of `minAvailable: 1` to survive node drains
+- Store ConfigMaps and Secrets in version control via sealed-secrets or external-secrets so they're never out of sync with the manifest
+- Alert on `kube_pod_container_status_restarts_total` rate > 1/min for 5 min

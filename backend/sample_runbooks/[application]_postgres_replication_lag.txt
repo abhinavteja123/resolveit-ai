@@ -1,0 +1,210 @@
+## PostgreSQL Streaming Replication Lag — Application Runbook
+
+### Problem Description
+A PostgreSQL physical streaming replica (hot standby) is falling behind the primary. Read queries that the application routes to the replica return stale data; in extreme cases the replica is unable to keep up with the WAL stream and the primary deletes WAL segments before the replica has applied them, breaking replication entirely. The lag manifests as either **byte lag** (bytes of WAL not yet received), **flush lag** (bytes received but not yet flushed to disk), or **replay lag** (bytes flushed but not yet applied to the data files).
+
+### Symptoms
+- `pg_stat_replication.replay_lsn` is well behind `pg_current_wal_lsn()` on the primary
+- Application reads return data noticeably older than expected (e.g., a write committed 30 s ago is invisible on the replica)
+- Monitoring alert: `pg_replication_lag_seconds > 60`
+- Replica logs: `WARNING: terminating walreceiver process due to administrator command`
+- Or worse: `FATAL: requested WAL segment 0000000100000A2300000045 has already been removed`
+- I/O on the replica is at 100 % `%util` (`iostat -x 1`) — replay can't keep up
+- Disk on the replica is filling because of accumulated WAL waiting to be applied
+- During or immediately after a long-running query on the replica with `hot_standby_feedback=off`
+
+### Diagnostic Steps
+
+1. **Measure the lag from the primary:**
+   ```sql
+   -- On primary:
+   SELECT
+     client_addr,
+     application_name,
+     state,
+     pg_wal_lsn_diff(pg_current_wal_lsn(), sent_lsn)   AS sent_lag_bytes,
+     pg_wal_lsn_diff(pg_current_wal_lsn(), write_lsn)  AS write_lag_bytes,
+     pg_wal_lsn_diff(pg_current_wal_lsn(), flush_lsn)  AS flush_lag_bytes,
+     pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) AS replay_lag_bytes,
+     write_lag, flush_lag, replay_lag
+   FROM pg_stat_replication;
+   ```
+   - Large `sent_lag` → network bottleneck primary → replica
+   - Large `flush_lag` → replica disk fsync slow
+   - Large `replay_lag` → replica CPU/IO can't apply WAL fast enough
+
+2. **From the replica side:**
+   ```sql
+   -- On replica:
+   SELECT
+     pg_is_in_recovery(),
+     pg_last_wal_receive_lsn(),
+     pg_last_wal_replay_lsn(),
+     EXTRACT(EPOCH FROM now() - pg_last_xact_replay_timestamp()) AS replay_lag_seconds;
+   ```
+
+3. **Check WAL retention on the primary:**
+   ```sql
+   -- On primary:
+   SHOW wal_keep_size;        -- PG13+
+   SHOW max_slot_wal_keep_size;
+   SELECT slot_name, active, restart_lsn,
+          pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) AS retained_bytes
+   FROM pg_replication_slots;
+   ```
+   If a slot is `active=false` and growing, the primary is hoarding WAL forever.
+
+4. **Look for a long-running query blocking replay (with `hot_standby_feedback`):**
+   ```sql
+   -- On replica:
+   SELECT pid, now() - query_start AS duration, state, query
+   FROM pg_stat_activity
+   WHERE state != 'idle'
+   ORDER BY duration DESC
+   LIMIT 10;
+   ```
+   On the primary, `hot_standby_feedback=on` causes long replica queries to delay vacuum, bloating tables — it's a trade-off, not a free fix.
+
+5. **Check replica resource pressure:**
+   ```bash
+   # On replica host:
+   iostat -x 1 5     # %util on the data disk
+   vmstat 1 5        # high si/so = swapping
+   top               # is `postgres: startup recovering` near 100% CPU?
+   ```
+
+6. **Check the network between primary and replica:**
+   ```bash
+   # On replica:
+   iperf3 -c <primary-ip> -t 10
+   # Latency:
+   ping -c 20 <primary-ip>
+   ```
+
+7. **Check WAL volume on the primary — is it pathological?**
+   ```sql
+   -- Top contributors to WAL volume in the last hour:
+   SELECT relname, n_tup_ins, n_tup_upd, n_tup_del, n_dead_tup
+   FROM pg_stat_user_tables
+   ORDER BY n_tup_upd + n_tup_del DESC
+   LIMIT 10;
+   -- A table doing 10 M updates/hour will swamp any replica.
+   ```
+
+8. **Check whether the replica's disk is faster than the primary's:**
+   ```bash
+   sudo fio --name=randwrite --ioengine=libaio --rw=randwrite \
+     --bs=8k --numjobs=4 --size=1G --runtime=30 --direct=1 --group_reporting
+   ```
+   A replica on slower disks than the primary will never catch up.
+
+### Resolution Steps
+
+1. **Kill a long-running replica query that's blocking replay:**
+   ```sql
+   -- On replica:
+   SELECT pg_cancel_backend(<pid>);
+   -- If that doesn't work:
+   SELECT pg_terminate_backend(<pid>);
+   ```
+
+2. **Tune `max_standby_streaming_delay` so replay doesn't wait forever for queries:**
+   ```ini
+   # postgresql.conf on the replica
+   max_standby_streaming_delay = 30s    # cancel conflicting queries after 30s
+   max_standby_archive_delay   = 30s
+   hot_standby_feedback = off            # avoids primary bloat, may cause query cancellations
+   ```
+   Reload (no restart needed for these):
+   ```bash
+   sudo -u postgres psql -c 'SELECT pg_reload_conf();'
+   ```
+
+3. **Increase replay parallelism (PG14+):**
+   ```ini
+   # postgresql.conf on the replica
+   recovery_prefetch = on
+   max_recovery_prefetch_distance = 1MB
+   ```
+
+4. **Bound the replication slot so the primary doesn't grow without limit:**
+   ```sql
+   -- On primary, PG13+:
+   ALTER SYSTEM SET max_slot_wal_keep_size = '50GB';
+   SELECT pg_reload_conf();
+   ```
+   Trade-off: if the replica falls more than 50 GB behind, it will lose its slot and need to be rebuilt — but the primary won't fill its disk.
+
+5. **Drop and recreate a broken replica when WAL is gone:**
+   ```bash
+   # On replica:
+   sudo systemctl stop postgresql
+   sudo -u postgres rm -rf /var/lib/postgresql/15/main
+   sudo -u postgres pg_basebackup \
+     -h primary.internal -U replicator \
+     -D /var/lib/postgresql/15/main \
+     -X stream -P -R --slot=replica1
+   sudo systemctl start postgresql
+   ```
+
+6. **Move the replica to faster storage:**
+   ```bash
+   # Stop replica, move data dir to NVMe, update postgresql.conf 'data_directory'.
+   # Or in cloud: change instance type / disk class to one with higher IOPS.
+   ```
+
+7. **Reduce primary WAL volume by tuning autovacuum and long transactions:**
+   ```sql
+   -- Top idle-in-transaction backends on the primary:
+   SELECT pid, age(now(), xact_start) AS age, query
+   FROM pg_stat_activity
+   WHERE state = 'idle in transaction'
+   ORDER BY age DESC LIMIT 10;
+   -- Kill stale ones:
+   SELECT pg_terminate_backend(<pid>);
+   ```
+
+8. **Promote the replica if the primary is permanently lost (DESTRUCTIVE — coordinate first):**
+   ```bash
+   # On replica:
+   sudo -u postgres pg_ctl promote -D /var/lib/postgresql/15/main
+   # Verify:
+   sudo -u postgres psql -c 'SELECT pg_is_in_recovery();'   -- should return 'f'
+   ```
+
+9. **Pause replication briefly to let an operation drain (PG10+):**
+   ```sql
+   -- On replica:
+   SELECT pg_wal_replay_pause();
+   -- Later:
+   SELECT pg_wal_replay_resume();
+   ```
+   Don't leave it paused; lag will grow indefinitely.
+
+10. **Verify recovery:**
+    ```sql
+    -- On primary, watch lag drop:
+    SELECT application_name,
+           pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) AS replay_lag_bytes
+    FROM pg_stat_replication;
+    ```
+    Trend should be downward; if flat or up, repeat diagnostics.
+
+### Escalation
+If the replica continues to lose ground after disk and config changes, escalate to the database team with:
+- `pg_stat_replication` snapshot from the primary covering the spike
+- `pg_stat_activity` from the replica showing long-running queries during the lag window
+- Output of `iostat -x 1 10` from the replica during peak lag
+- Recent migration / schema change history on the primary (large `UPDATE` migrations are a common cause)
+- Network bandwidth measurement (`iperf3`) between primary and replica
+- Current `wal_level`, `max_wal_senders`, `max_replication_slots`, `recovery_prefetch` values
+
+### Prevention
+- Match replica disk performance to or above the primary's
+- Set `max_slot_wal_keep_size` on every replication slot to bound primary disk growth
+- Alert on `pg_replication_lag_seconds > 30` and on `pg_replication_lag_bytes > 1GB`
+- Avoid massive single-statement `UPDATE` migrations — chunk them into batches of 10k–50k rows with sleeps
+- Don't enable `hot_standby_feedback` unless you accept primary table bloat as a trade
+- Run `pg_basebackup` rebuild rehearsals quarterly; document RTO
+- Use `synchronous_commit = remote_write` or `remote_apply` for tier-1 data to bound RPO
+- Keep `archive_mode = on` and ship WAL to object storage so a slot loss doesn't mean PITR loss

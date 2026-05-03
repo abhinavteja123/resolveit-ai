@@ -136,25 +136,22 @@ flowchart LR
 ## Diagram 3 — RAG Pipeline Flow
 
 ```mermaid
-flowchart TD
-    Q(["User Query<br/>Dashboard.jsx"]) --> API["POST /query/stream<br/>{query, scope, mode,<br/>thread_id, regenerate_of}"]
-    API --> GM["get_mode(name) → ModeConfig<br/>use_hyde · top_k · top_n<br/>temp · system_prompt"]
-    GM --> CC{"Cache lookup<br/>sha256(mode:scope:user:query)<br/>skipped on regenerate_of"}
-    CC -->|hit| HIT["Return cached<br/>{answer, sources,<br/>confidence, follow_ups}"]
-    CC -->|miss| HYDE["HyDE Expansion<br/>(if cfg.use_hyde)<br/>Gemini → 3-5 sentence<br/>hypothetical passage"]
-    HYDE --> EMB["Embed query<br/>BAAI/bge-small-en-v1.5<br/>384-dim · L2-normalized"]
-    EMB --> HYB["Hybrid Search top-k<br/>FAISS IndexFlatIP + BM25Okapi<br/>Reciprocal Rank Fusion (k=60)<br/>de-dup by chunk_id"]
-    HYB --> SCOPE["Scope filter<br/>admin / mine / both"]
-    SCOPE --> RR["Cross-Encoder Re-rank<br/>BAAI/bge-reranker-base<br/>sigmoid → confidence ∈ [0,1]<br/>keep top_n"]
-    RR --> GATE{"Gate check<br/>top_score < 0.25 ?"}
-    GATE -->|yes| ESC["Emit escalation sentinel<br/>(clear sources/conf)"]
-    GATE -->|no| LLM["Gemini 2.5 Flash<br/>system_prompt = ModeConfig.system_prompt<br/>temperature = ModeConfig.temperature<br/>stream tokens via SSE"]
-    LLM --> FOLLOW["Follow-up generator<br/>Gemini → 3 short questions<br/>(best-effort)"]
-    LLM --> LOG["Log to query_logs<br/>(mode, thread_id, regenerate_of)<br/>backward-compat fallback"]
-    LOG --> SET["Update TTLCache<br/>{answer, sources,<br/>confidence, follow_ups}"]
-    FOLLOW -.-> DONE
-    SET --> DONE(["SSE 'done' event<br/>{query_log_id, top_confidence,<br/>mode, follow_ups}"])
-    ESC --> DONE
+flowchart LR
+    Q([Query]) --> M[get_mode]
+    M --> CC{Cache?}
+    CC -->|hit| OUT([Answer])
+    CC -->|miss| H[HyDE]
+    H --> E[Embed]
+    E --> HY[Hybrid<br/>FAISS+BM25<br/>RRF]
+    HY --> R[Re-rank]
+    R --> G{score<br/>≥ 0.25?}
+    G -->|no| ESC[Escalate]
+    G -->|yes| L[Gemini]
+    L --> F[Follow-ups]
+    L --> LG[Log + Cache]
+    F --> OUT
+    LG --> OUT
+    ESC --> OUT
 ```
 
 ---
@@ -289,21 +286,19 @@ erDiagram
 ## Diagram 7 — Authentication Flow
 
 ```mermaid
-flowchart TD
-    USER(["User"]) -->|"1. clicks Sign-in"| LOGIN["Login.jsx (React)"]
-    LOGIN -->|"2. signInWithPopup()"| SDK["Firebase JS SDK<br/>GoogleAuthProvider /<br/>signInWithEmail"]
-    SDK -->|"3. delegate"| FB["Firebase Auth (cloud)"]
-    FB -->|"4. OAuth"| GOOG["Google OAuth"]
-    GOOG -.->|"profile + consent"| FB
-    FB -.->|"5. issues ID Token"| TOKEN["Firebase ID Token (JWT)<br/>{ uid, email, name, picture, exp ≈ 1h }"]
-    TOKEN -->|"6. store token"| AC["AuthContext.jsx<br/>{user, token, isAdmin, loading}<br/>auto-refresh every 50 min"]
-    AC -->|"7. attach to API call"| FETCH["Axios / fetch<br/>Authorization: Bearer ID Token"]
-    FETCH -->|"HTTPS"| FA["FastAPI route handler<br/>Depends(get_current_user)"]
-    FA -->|"8. verify JWT"| FBA["firebase_auth.py<br/>firebase_admin.auth.<br/>verify_id_token(token)"]
-    FBA --> CHECK{"Email ∈ ADMIN_EMAILS ?<br/>→ is_admin = True / False"}
-    FBA -.->|"on failure"| ERR["HTTP 401<br/>Invalid / expired token"]
-    CHECK --> UDICT["user dict<br/>{uid, email, name, picture, is_admin}<br/>injected into route handler"]
-    UDICT --> PROCEED["Pipeline proceeds<br/>(query · upload · admin · etc.)<br/>respects is_admin guard for /admin/*"]
+flowchart LR
+    U([User]) --> L[Login.jsx]
+    L --> S[Firebase SDK]
+    S --> FB[Firebase Auth]
+    FB -.-> T[ID Token JWT]
+    T --> AC[AuthContext]
+    AC --> FE[fetch + Bearer]
+    FE --> API[FastAPI]
+    API --> V[verify_id_token]
+    V -->|fail| E[HTTP 401]
+    V -->|ok| ADM{Admin email?}
+    ADM --> OK[user dict<br/>+ is_admin]
+    OK --> P([Route handler])
 ```
 
 ---
@@ -311,51 +306,23 @@ flowchart TD
 ## Diagram 8 — Deployment Topology
 
 ```mermaid
-flowchart TB
-    subgraph CLIENT_HOST["Client Host"]
-        BR["Browser<br/>(any modern browser)"]
+flowchart LR
+    BR([Browser])
+    subgraph DC[Docker Compose]
+        FE[frontend<br/>nginx :5173]
+        BE[backend<br/>FastAPI :8000]
+        V[(FAISS volume)]
     end
+    SUPA[(Supabase)]
+    FB[Firebase Auth]
+    GEM[Gemini API]
 
-    subgraph DOCKER["Docker Compose Network"]
-        subgraph FE_C["frontend container<br/>(node:18-alpine + nginx)"]
-            VITE["Vite production build<br/>→ /usr/share/nginx/html"]
-            NGX["nginx :80 → host :5173"]
-        end
-
-        subgraph BE_C["backend container<br/>(python:3.11-slim)"]
-            UVI["Uvicorn :8000"]
-            APP["FastAPI app<br/>(main.py)"]
-            ML["ML models warmed at startup<br/>BGE-small · BGE-reranker-base<br/>sentence-transformers"]
-        end
-
-        subgraph VOL["Persistent Volumes"]
-            FAISS_VOL[("faiss_index/<br/>index.bin + metadata.json")]
-            FB_JSON[("firebase-service-account.json<br/>(read-only mount)")]
-        end
-    end
-
-    subgraph EXT["External Services (Cloud)"]
-        SUPA[("Supabase PostgreSQL")]
-        FBC["Firebase Authentication"]
-        GEM["Google Gemini API<br/>(gemini-2.5-flash + fallbacks)"]
-        HF["Hugging Face Hub<br/>(model download on first run)"]
-    end
-
-    BR -->|"https :5173"| NGX
-    NGX --> VITE
-    BR -.->|"https :8000<br/>Bearer JWT"| UVI
-    UVI --> APP
-    APP --> ML
-    APP --> FAISS_VOL
-    APP --> FB_JSON
-    APP -->|"REST"| SUPA
-    APP -->|"verify ID token"| FBC
-    APP -->|"google-genai SDK"| GEM
-    ML -.->|"first-run download"| HF
-
-    ENV["Environment variables<br/>SUPABASE_* · GEMINI_API_KEY<br/>FIREBASE_CREDENTIALS_PATH<br/>ADMIN_EMAILS · CORS_ORIGINS<br/>QUERY_RATE_LIMIT · QUERY_CACHE_*"]
-    ENV -.-> APP
-    ENV -.-> NGX
+    BR --> FE
+    BR --> BE
+    BE --> V
+    BE --> SUPA
+    BE --> FB
+    BE --> GEM
 ```
 
 ---

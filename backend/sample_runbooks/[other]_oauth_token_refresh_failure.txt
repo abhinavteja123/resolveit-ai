@@ -1,0 +1,193 @@
+## OAuth 2.0 Token Refresh Failure — Other Runbook
+
+### Problem Description
+A service-to-service or user-facing application is failing OAuth 2.0 token refresh. Access tokens expire (typically every hour for cloud providers, every day or two for SaaS APIs), and the refresh-token flow is breaking down. Symptoms range from intermittent 401 Unauthorized responses on outbound API calls to a complete outage where every downstream call fails until tokens are manually re-issued. Root causes are usually: clock skew, expired or revoked refresh token, IdP rotated signing keys, missing scope on re-issue, redirect-URI/audience mismatch, or rate-limit on the token endpoint.
+
+### Symptoms
+- Outbound API calls suddenly start returning `401 Unauthorized` with `WWW-Authenticate: Bearer error="invalid_token"`
+- Application logs: `OAuth2Error: invalid_grant` or `expired_token` or `refresh_token_expired`
+- Token endpoint returns:
+  - `400` with body `{"error":"invalid_grant"}` (bad refresh token)
+  - `401` with `{"error":"invalid_client"}` (client_secret rotated)
+  - `429` (token endpoint rate-limited)
+- JWT validation errors: `JWS signature verification failed` or `kid not found in JWKS`
+- Users repeatedly redirected back to the IdP sign-in page
+- Background jobs fail at the same time every day (= the cached token's exact lifespan)
+- Successful auth on staging, broken on production with same code → environment-specific config issue
+
+### Diagnostic Steps
+
+1. **Decode the failing access token to check expiry, audience, scope:**
+   ```bash
+   # Header + payload only (signature ignored):
+   echo "<jwt>" | cut -d. -f2 | base64 -d 2>/dev/null | jq
+   # Look at:
+   #   "exp" — Unix timestamp; if past, the token is expired
+   #   "iss" — must match the IdP you trust
+   #   "aud" — must match the audience your API expects
+   #   "scope" — must include what the call requires
+   ```
+
+2. **Check host clock — even 60 s skew can break JWT verification:**
+   ```bash
+   timedatectl
+   chronyc tracking
+   # Or:
+   ntpq -p
+   # Compare against IdP:
+   curl -sI https://idp.example.com/ | grep -i ^date
+   date -u
+   ```
+
+3. **Hit the token endpoint manually with the refresh token:**
+   ```bash
+   curl -v -X POST https://idp.example.com/oauth/token \
+     -H 'Content-Type: application/x-www-form-urlencoded' \
+     -d 'grant_type=refresh_token' \
+     -d 'refresh_token=<refresh_token>' \
+     -d 'client_id=<client_id>' \
+     -d 'client_secret=<client_secret>'
+   ```
+   Read the JSON response body verbatim — `error_description` is usually the actual diagnosis.
+
+4. **Verify the IdP's JWKS is reachable from the app host:**
+   ```bash
+   curl -s https://idp.example.com/.well-known/openid-configuration | jq .jwks_uri
+   curl -s https://idp.example.com/.well-known/jwks.json | jq '.keys[].kid'
+   # Compare the 'kid' values to the 'kid' in your token header.
+   ```
+
+5. **Check the application's secret store — has the client_secret rotated?**
+   ```bash
+   # AWS Secrets Manager:
+   aws secretsmanager get-secret-value --secret-id myapp/oauth --query 'VersionStages'
+   # HashiCorp Vault:
+   vault kv get secret/myapp/oauth
+   # Kubernetes Secret:
+   kubectl get secret myapp-oauth -n myns -o jsonpath='{.data.client_secret}' | base64 -d
+   ```
+
+6. **Check token endpoint rate-limit / quota:**
+   ```bash
+   # Response headers usually include:
+   curl -i https://idp.example.com/oauth/token -d ... | grep -iE 'x-ratelimit|retry-after'
+   ```
+
+7. **Look at refresh token rotation behaviour:**
+   - Some IdPs (Auth0, Okta with rotation enabled) issue a NEW refresh token on every refresh and invalidate the old one
+   - If two service replicas use the same refresh token concurrently, one wins and the other gets `invalid_grant` forever after
+   ```bash
+   grep -E 'refresh_token|invalid_grant' /var/log/myapp/*.log | tail -20
+   ```
+
+8. **Verify `audience`, `redirect_uri`, and `scope` against IdP config:**
+   ```bash
+   # The token request audience must EXACTLY match what's registered:
+   echo "<request_jwt>" | cut -d. -f2 | base64 -d | jq .aud
+   ```
+
+### Resolution Steps
+
+1. **Force a fresh authorization (the universal fix when refresh fails):**
+   - For user-facing apps: clear the user's session and redirect to the IdP login
+   - For service accounts: re-run the device-code or client-credentials flow:
+     ```bash
+     curl -X POST https://idp.example.com/oauth/token \
+       -d 'grant_type=client_credentials' \
+       -d 'client_id=<client_id>' \
+       -d 'client_secret=<client_secret>' \
+       -d 'audience=https://api.example.com' \
+       -d 'scope=read:orders write:orders'
+     ```
+   - Save the new tokens back into the secret store.
+
+2. **Fix clock skew:**
+   ```bash
+   sudo systemctl restart chrony
+   sudo chronyc makestep
+   timedatectl set-ntp true
+   timedatectl
+   ```
+
+3. **Rotate and update client_secret:**
+   ```bash
+   # 1) Create a new secret in the IdP (most allow two active secrets briefly).
+   # 2) Update the secret store:
+   aws secretsmanager update-secret \
+     --secret-id myapp/oauth \
+     --secret-string '{"client_id":"...","client_secret":"NEW"}'
+   # 3) Restart the service so it picks up the new secret:
+   kubectl rollout restart deployment/myapp -n myns
+   # 4) Wait until traffic is fully on the new secret, then revoke the old one in the IdP.
+   ```
+
+4. **Fix concurrent-refresh race (single source of truth):**
+   - Move token caching to a shared store (Redis) with a distributed lock around the refresh:
+     ```text
+     SET token:lock <uuid> NX EX 10
+     if acquired:
+        refresh and write new {access, refresh, exp}
+     else:
+        sleep + read
+     ```
+   - Or refresh proactively at 80% of token lifetime, not at 401 failure time.
+
+5. **Disable refresh-token rotation if you don't need it (Auth0/Okta):**
+   - In the IdP application settings, turn off "Refresh Token Rotation" — old refresh tokens stay valid until manual revocation.
+
+6. **Update the JWKS cache in the app — IdP may have rotated keys:**
+   ```bash
+   # Many libraries cache JWKS for 24h. Force-flush:
+   kubectl rollout restart deployment/myapp -n myns
+   # Or hit a debug endpoint that drops the cache.
+   ```
+   Or programmatically: ensure the JWKS cache TTL is ≤ 1 h and the library refreshes on `kid not found`.
+
+7. **Back off on 429 from the token endpoint:**
+   ```text
+   on 429:
+     read Retry-After header (seconds)
+     sleep that long
+     retry once
+     if still 429: alert + stop
+   ```
+
+8. **Fix scope or audience mismatch in the token request:**
+   ```bash
+   # Compare what the app sends vs what the IdP application has registered.
+   # The 'audience' for many IdPs is the API identifier URI, NOT the client_id.
+   ```
+
+9. **As a temporary unblock: pre-mint a long-lived service token (where supported):**
+   ```bash
+   # Some IdPs allow a "machine-to-machine" token good for 24h or 30d.
+   # Use this only as a stop-gap; rotate aggressively.
+   ```
+
+10. **Verify recovery — make a real API call with the new token:**
+    ```bash
+    curl -i -H "Authorization: Bearer $NEW_ACCESS_TOKEN" \
+      https://api.example.com/v1/health
+    # Expect 200, not 401.
+    ```
+
+### Escalation
+If token refresh keeps failing after secret rotation, clock fix, and a fresh authorization, escalate to the identity / platform team with:
+- The exact JSON error body returned by the token endpoint
+- A timestamped sample of a failing request and its decoded JWT header (to identify the `kid`)
+- IdP application name and ID
+- Whether refresh-token rotation is enabled
+- Number of service replicas potentially refreshing the same token concurrently
+- Output of `timedatectl` and `chronyc tracking`
+- Recent secret-rotation or IdP configuration-change events
+
+### Prevention
+- Refresh tokens proactively at 80% of access-token lifetime, never on 401
+- Use a shared token cache with a distributed lock so N replicas don't trigger N concurrent refreshes
+- Validate `iss`, `aud`, `exp`, `nbf`, and `kid` on every JWT — fail closed
+- Keep host NTP healthy; alert on clock skew > 30 s
+- Cache JWKS with TTL ≤ 1 h; refresh on `kid` mismatch
+- Store secrets in a managed secret store, never in env files committed to git
+- Rotate `client_secret` automatically every 90 days using overlap (two-secrets-active) windows
+- Alert on token-endpoint 4xx rate > 1% over 5 minutes
+- Build a synthetic that authenticates end-to-end every 5 minutes and pages on consecutive failures

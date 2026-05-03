@@ -1,0 +1,193 @@
+## Load Balancer 502 Bad Gateway from Upstream — Network Runbook
+
+### Problem Description
+A reverse-proxy or load balancer (Nginx, HAProxy, AWS ALB, GCP LB) is intermittently or persistently returning HTTP 502 Bad Gateway responses to clients. The 502 originates at the LB tier when it cannot get a valid HTTP response from one or more upstream backend servers. Common upstream failure modes are: backend process not listening, backend crashed mid-request, TLS handshake failure between LB and upstream, or backend response exceeding the LB's read timeout.
+
+### Symptoms
+- Clients receive `502 Bad Gateway` from a subset of requests; healthy requests still succeed
+- LB access log shows status `502` with upstream response time `-` or `0.000`
+- LB error log lines such as:
+  - Nginx: `upstream prematurely closed connection while reading response header from upstream`
+  - Nginx: `connect() failed (111: Connection refused) while connecting to upstream`
+  - HAProxy: `SH-- 0/0/0/-1/0` (server hangup) or `sH-- ` (server timeout during handshake)
+- AWS ALB target group shows targets as `unhealthy`
+- Backpressure: 5xx rate spikes on the LB metrics, request latency may briefly drop (because failures return fast)
+- Clients see the failure mostly during deploy windows or auto-scale events
+
+### Diagnostic Steps
+
+1. **Confirm where the 502 is coming from (LB vs backend):**
+   ```bash
+   # From LB host, hit the upstream directly:
+   curl -kv https://10.0.5.42:8443/health
+   # If this 200s but the LB returns 502, the problem is in the LB ↔ upstream path
+   # If this also fails, the upstream itself is broken
+   ```
+
+2. **Check LB access + error logs around the failed time window:**
+   ```bash
+   # Nginx:
+   tail -F /var/log/nginx/error.log | grep -i upstream
+   awk '$9 == 502' /var/log/nginx/access.log | tail -50
+   # HAProxy:
+   tail -F /var/log/haproxy.log | grep -E ' 5[0-9]{2} '
+   ```
+
+3. **Inspect upstream health / pool state:**
+   ```bash
+   # Nginx Plus or upstream module status page:
+   curl http://localhost/nginx_status
+   # HAProxy stats socket:
+   echo "show servers state" | sudo socat /var/run/haproxy.sock stdio
+   echo "show stat" | sudo socat /var/run/haproxy.sock stdio | column -ts,
+   # AWS:
+   aws elbv2 describe-target-health --target-group-arn <arn>
+   ```
+
+4. **Verify backends are reachable on the configured port:**
+   ```bash
+   for host in 10.0.5.41 10.0.5.42 10.0.5.43; do
+     echo -n "$host: "
+     timeout 2 bash -c "</dev/tcp/$host/8443" && echo OPEN || echo CLOSED
+   done
+   ```
+
+5. **Check upstream process is actually listening:**
+   ```bash
+   # On each backend:
+   ss -tlnp | grep 8443
+   netstat -tlnp | grep 8443
+   systemctl status myapp
+   ```
+
+6. **Verify TLS between LB and upstream when HTTPS is used:**
+   ```bash
+   openssl s_client -connect 10.0.5.42:8443 -servername backend.internal </dev/null 2>&1 \
+     | grep -E 'subject=|issuer=|Verify return code'
+   ```
+   Expired or self-signed upstream certs are a frequent cause when LB has `proxy_ssl_verify on`.
+
+7. **Look for application-side crashes correlated with the 502 spikes:**
+   ```bash
+   # On the upstream:
+   journalctl -u myapp --since '15 minutes ago' | grep -iE 'panic|fatal|killed|exit'
+   dmesg -T | tail -30
+   ```
+
+8. **Measure upstream latency vs LB read timeout:**
+   ```bash
+   # Time the slow request directly against the backend:
+   curl -k -o /dev/null -s -w "connect=%{time_connect} ttfb=%{time_starttransfer} total=%{time_total}\n" \
+     https://10.0.5.42:8443/slow-endpoint
+   # Compare against the LB's proxy_read_timeout / timeout server
+   ```
+
+9. **For Kubernetes-fronted services — check pod readiness:**
+   ```bash
+   kubectl get pods -n myns -l app=myapp -o wide
+   kubectl describe pod -n myns <pod>     # look for failed readinessProbe
+   kubectl get endpoints -n myns myapp    # ensure non-empty
+   ```
+
+### Resolution Steps
+
+1. **Pull a single bad upstream out of rotation while you investigate:**
+   ```bash
+   # Nginx — comment out the line and reload:
+   sudo sed -i 's/^\s*server 10.0.5.42:8443;/# &/' /etc/nginx/conf.d/upstream.conf
+   sudo nginx -t && sudo systemctl reload nginx
+   # HAProxy — disable via runtime API:
+   echo "disable server backend/web2" | sudo socat /var/run/haproxy.sock stdio
+   ```
+
+2. **Restart a crashed backend:**
+   ```bash
+   ssh 10.0.5.42 'sudo systemctl restart myapp'
+   # Verify:
+   ssh 10.0.5.42 'curl -k https://localhost:8443/health'
+   ```
+
+3. **Increase LB → upstream timeouts when the backend is legitimately slow:**
+   ```nginx
+   # /etc/nginx/conf.d/myapp.conf
+   location / {
+     proxy_pass            https://backend_pool;
+     proxy_connect_timeout 5s;
+     proxy_send_timeout    60s;
+     proxy_read_timeout    60s;     # was 30s
+     proxy_next_upstream   error timeout http_502 http_503 http_504;
+     proxy_next_upstream_tries 2;
+   }
+   ```
+   ```bash
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+
+4. **Tighten upstream health checks so dead backends drop out fast:**
+   ```haproxy
+   # /etc/haproxy/haproxy.cfg
+   backend web
+     option httpchk GET /health HTTP/1.1\r\nHost:\ backend.internal
+     http-check expect status 200
+     default-server inter 2s fall 3 rise 2 maxconn 1000
+   ```
+   ```bash
+   sudo systemctl reload haproxy
+   ```
+
+5. **For Kubernetes — fix readinessProbe so the LB stops sending traffic to not-ready pods:**
+   ```yaml
+   readinessProbe:
+     httpGet: { path: /health, port: 8080 }
+     initialDelaySeconds: 5
+     periodSeconds: 5
+     timeoutSeconds: 2
+     failureThreshold: 3
+   ```
+   ```bash
+   kubectl apply -f deployment.yaml
+   kubectl rollout status deployment myapp
+   ```
+
+6. **Renew expired upstream TLS certs:**
+   ```bash
+   # On the backend:
+   sudo certbot renew --cert-name backend.internal
+   sudo systemctl reload myapp
+   ```
+
+7. **Bring the recovered backend back into rotation:**
+   ```bash
+   # HAProxy:
+   echo "enable server backend/web2" | sudo socat /var/run/haproxy.sock stdio
+   # Nginx:
+   sudo sed -i 's/^# server 10.0.5.42:8443;/server 10.0.5.42:8443;/' /etc/nginx/conf.d/upstream.conf
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+
+8. **Add retry on idempotent methods only (do NOT retry POSTs blindly):**
+   ```nginx
+   proxy_next_upstream error timeout http_502 http_503;
+   proxy_next_upstream_tries 2;
+   proxy_next_upstream_timeout 10s;
+   # And only on safe methods:
+   proxy_method $request_method;
+   ```
+
+### Escalation
+If 502s continue after the failing backend is removed and a healthy one is confirmed via direct curl, escalate to the platform team with:
+- Affected timestamp window with timezone
+- Sample LB access-log lines including `$upstream_addr` and `$upstream_status`
+- LB error-log excerpt
+- `kubectl get endpoints` or `aws elbv2 describe-target-health` snapshot
+- Output of `curl -kv` directly against the upstream
+- Recent deploy / autoscale events on the backend
+
+### Prevention
+- Match `keepalive_timeout` on the LB to be < the backend's idle timeout (otherwise LB reuses a closed conn → 502)
+- Enable LB-side connection pooling (`upstream { keepalive 64; }` in Nginx) and graceful drain
+- Configure the backend to send `Connection: close` only when needed
+- Always run readiness probes on Kubernetes pods; never rely on liveness alone
+- Alert on any single target group having `<= 1` healthy target
+- Renew internal TLS certs via automation 30+ days before expiry
+- Run a synthetic that hits the LB every 30 s from outside; alert on >0 5xx in any 1 min window

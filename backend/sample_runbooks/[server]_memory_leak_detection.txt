@@ -1,0 +1,179 @@
+## Server Memory Leak Detection and Mitigation — Server Runbook
+
+### Problem Description
+A long-running process on a Linux host is steadily consuming more memory over hours or days without releasing it back to the OS. Eventually the host's free RAM falls below safe thresholds, swap usage climbs, the OOM killer terminates random processes, or the service is killed by a systemd cgroup memory limit. Unlike a sudden application OOM, this manifests as a slow, monotonic upward drift in resident set size (RSS) until something breaks.
+
+### Symptoms
+- `free -m` shows `available` memory steadily declining over hours
+- `top -o %MEM` consistently reports the same PID as the largest consumer, with a growing RES value
+- `dmesg | tail` contains entries like `Out of memory: Killed process 12345 (java) total-vm:...`
+- Swap usage (`vmstat 1 5`) is climbing from near-zero
+- `journalctl -u myapp` shows the service being respawned by systemd at regular intervals
+- Application latency increases as page-cache pressure forces evictions
+- `cat /proc/meminfo` shows `MemAvailable` shrinking while `Slab` or `AnonPages` grows
+
+### Diagnostic Steps
+
+1. **Confirm the leak is real, not just steady-state high usage:**
+   ```bash
+   # Sample RSS every 30 s for 30 minutes
+   while true; do
+     date '+%F %T' >> /tmp/memwatch.log
+     ps -eo pid,rss,vsz,cmd --sort=-rss | head -10 >> /tmp/memwatch.log
+     sleep 30
+   done &
+   ```
+   Plot the RSS column for the suspect PID. Steady upward trend over an hour with no plateau = real leak.
+
+2. **System-wide memory snapshot:**
+   ```bash
+   free -m
+   cat /proc/meminfo | head -20
+   vmstat 1 5
+   sar -r 1 10        # historical
+   ```
+   `MemAvailable` is the only number that matters; everything else can mislead.
+
+3. **Identify the top RSS consumers:**
+   ```bash
+   ps aux --sort=-rss | head -20
+   ps -eo pid,user,rss,vsz,cmd --sort=-rss | head -10
+   smem -tk -s rss | head -20      # smem accounts for shared pages correctly
+   ```
+
+4. **Per-process detail for the suspect PID:**
+   ```bash
+   PID=12345
+   cat /proc/$PID/status | grep -E '^(VmRSS|VmSize|VmSwap|RssAnon|RssFile)'
+   pmap -x $PID | tail -20         # mappings sorted by size
+   cat /proc/$PID/smaps_rollup     # one-line totals
+   ```
+
+5. **Check whether memory is anonymous (heap) or file-backed:**
+   ```bash
+   cat /proc/$PID/status | grep Rss
+   # RssAnon = heap / malloc / brk → application-level leak
+   # RssFile = mmap'd files → file-cache or large mapped data
+   ```
+
+6. **For Java services — separate heap from native:**
+   ```bash
+   jstat -gc $PID 1000 5
+   jcmd $PID GC.heap_info
+   jcmd $PID VM.native_memory summary    # requires -XX:NativeMemoryTracking=summary
+   ```
+
+7. **For Node.js services:**
+   ```bash
+   # Trigger a heap snapshot:
+   kill -SIGUSR2 $PID                    # if running with --inspect
+   # Or use heapdump module + Chrome DevTools to inspect retained objects
+   ```
+
+8. **Check the OOM history:**
+   ```bash
+   dmesg -T | grep -iE 'killed process|out of memory' | tail -20
+   journalctl -k --since '24 hours ago' | grep -i oom
+   ```
+
+### Resolution Steps
+
+1. **Immediate relief — restart the leaking service:**
+   ```bash
+   systemctl restart myapp
+   # Confirm RSS dropped:
+   ps -p $(pgrep -f myapp) -o pid,rss,cmd
+   ```
+
+2. **If the host is in critical memory pressure, drop page cache (last-resort, read-only side-effect):**
+   ```bash
+   sync
+   echo 3 > /proc/sys/vm/drop_caches
+   # Re-check:
+   free -m
+   ```
+
+3. **Kill the leaking process gracefully if restart isn't an option:**
+   ```bash
+   kill -15 <PID>          # SIGTERM, allows cleanup
+   sleep 10
+   kill -9 <PID>           # only if it didn't exit
+   ```
+
+4. **Add a systemd memory limit so the OOM killer is targeted:**
+   ```ini
+   # /etc/systemd/system/myapp.service.d/limits.conf
+   [Service]
+   MemoryMax=4G
+   MemoryHigh=3.5G
+   Restart=on-failure
+   RestartSec=10s
+   ```
+   ```bash
+   systemctl daemon-reload
+   systemctl restart myapp
+   ```
+
+5. **Schedule a controlled cyclical restart while engineering investigates:**
+   ```bash
+   # /etc/cron.d/myapp-memory-cycle
+   0 4 * * *  root  systemctl restart myapp
+   ```
+
+6. **For Java — bound the heap and enable a heap dump on OOM:**
+   ```bash
+   # Append to the JVM args:
+   -Xmx2g -Xms2g \
+   -XX:+HeapDumpOnOutOfMemoryError \
+   -XX:HeapDumpPath=/var/log/myapp/heapdumps \
+   -XX:+ExitOnOutOfMemoryError
+   ```
+
+7. **Increase swap as a buffer (only if you control the host and have spare disk):**
+   ```bash
+   fallocate -l 4G /swapfile
+   chmod 600 /swapfile
+   mkswap /swapfile
+   swapon /swapfile
+   echo '/swapfile none swap sw 0 0' >> /etc/fstab
+   ```
+
+8. **If running in containers, set explicit memory limits:**
+   ```bash
+   # Docker:
+   docker update --memory=4g --memory-swap=4g <container>
+   # Kubernetes deployment:
+   kubectl set resources deployment myapp \
+     --requests=memory=2Gi --limits=memory=4Gi
+   ```
+
+9. **For Node.js — cap V8 old-space:**
+   ```bash
+   node --max-old-space-size=2048 server.js
+   # Or via env:
+   NODE_OPTIONS="--max-old-space-size=2048" systemctl restart myapp
+   ```
+
+10. **Capture a leak dump for engineering before final restart:**
+    ```bash
+    # Java:
+    jcmd $PID GC.heap_dump /tmp/heap-$(date +%s).hprof
+    # Generic core dump (any language):
+    gcore $PID
+    ```
+
+### Escalation
+If RSS continues to grow after restart with no obvious external trigger (load is normal, no new deploy), escalate to the application engineering team with:
+- The `/tmp/memwatch.log` time series proving the leak
+- A heap dump (`.hprof` for Java, `.heapsnapshot` for Node) captured before the last restart
+- `pmap -x <PID>` output from a leaked process
+- Recent deploy timestamps from the change log
+- Output of `dmesg | grep -i oom` showing OOM kill history
+
+### Prevention
+- Run memory regression tests under sustained load before each release
+- Alert on RSS growth rate, not just absolute usage (e.g., "RSS grew >20% in 1 h")
+- Set both `MemoryHigh` and `MemoryMax` on every systemd service
+- Require `--max-old-space-size` for Node, `-Xmx` for Java in all production configs
+- Enable `HeapDumpOnOutOfMemoryError` (Java) or `--heapsnapshot-near-heap-limit` (Node) so the next leak self-captures evidence
+- Track `RssAnon` per service in the metrics dashboard with a 7-day rolling delta
