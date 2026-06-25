@@ -1,6 +1,7 @@
 # ResolveIT AI — Smart Runbook Resolution Assistant
 
-> **RAG-powered IT support** — Semantic search through runbooks with AI-generated resolution steps.
+> **RAG-powered IT support** — Ask in plain English, get cited, step-by-step
+> resolutions drawn **only** from your indexed runbooks. Never hallucinated.
 
 ![Stack](https://img.shields.io/badge/Python-FastAPI-009688?style=flat-square&logo=fastapi)
 ![Stack](https://img.shields.io/badge/React-Vite-61DAFB?style=flat-square&logo=react)
@@ -8,30 +9,106 @@
 ![Stack](https://img.shields.io/badge/Supabase-DB-3ECF8E?style=flat-square&logo=supabase)
 ![Stack](https://img.shields.io/badge/Google-Gemini-4285F4?style=flat-square&logo=google)
 
+ResolveIT AI turns a pile of IT runbooks (PDF / DOCX / TXT) into a searchable
+assistant. Ask a question — _"Apache returning 502"_, _"DNS resolution failing"_ —
+and get a cited, step-by-step fix from your runbooks. If nothing relevant is
+indexed, it **refuses and tells you to escalate** instead of guessing.
+
 ---
 
 ## 🏗️ Architecture
 
 ```
-User → React (Firebase Google Auth) → FastAPI Backend
-                                         ├── FAISS Vector Search (all-MiniLM-L6-v2)
-                                         ├── Cross-Encoder Re-Ranking (ms-marco-MiniLM)
-                                         ├── Gemini 1.5 Flash (RAG Generation)
-                                         └── Supabase PostgreSQL (Metadata + Logs)
+┌─────────────┐      ┌──────────────────────────────────────────────┐
+│   React     │      │                 FastAPI                       │
+│  + Vite     │─────▶│  routes → rag.pipeline → retrieval → Gemini   │
+│ (Firebase   │ HTTP │                                                │
+│  Auth)      │◀─────│  HyDE → embed → hybrid(FAISS+BM25) → rerank    │
+└─────────────┘ SSE  │       → confidence gate → generate → log       │
+                     └───────────────┬──────────────┬─────────────────┘
+                                     │              │
+                              ┌──────▼─────┐  ┌─────▼──────┐
+                              │  Supabase  │  │  Firebase  │
+                              │ (Postgres) │  │   Admin    │
+                              └────────────┘  └────────────┘
 ```
+
+**Retrieval pipeline** (`backend/rag/pipeline.py`):
+
+`HyDE expand → embed query → hybrid search (FAISS + BM25) → cross-encoder rerank
+→ confidence gate → Gemini generate → log to Supabase → follow-up suggestions`
+
+A per-process TTL cache short-circuits repeat queries; regenerations skip it.
+
+---
 
 ## ✨ Features
 
 - **Multi-format ingestion** — PDF, DOCX, TXT runbooks parsed and indexed
-- **Section-aware chunking** — Intelligent splitting by headings with sliding-window fallback
-- **Semantic search** — FAISS vector similarity with HuggingFace embeddings
-- **Cross-encoder re-ranking** — Precision improvement over basic cosine similarity
-- **RAG generation** — Gemini LLM generates step-by-step resolution with cited sources
-- **Confidence scoring** — Sigmoid-normalized rerank scores (0–1)
+- **Section-aware chunking** — splits by headings with sliding-window fallback
+- **Hybrid retrieval** — FAISS dense vectors (`BAAI/bge-small-en-v1.5`) **+** BM25 keyword search
+- **HyDE query expansion** — generates a hypothetical answer to boost recall
+- **Cross-encoder re-ranking** — `BAAI/bge-reranker-base` reorders by true relevance
+- **Confidence gate** — refuses to answer below threshold, so no fabricated citations
+- **6 answer modes** — `fast`, `standard`, `deep`, `eli5`, `expert`, `dryrun` ([details](#-answer-modes))
+- **Streaming answers** — token-by-token over Server-Sent Events
+- **Inline citations** — every step cites the runbook excerpt it came from
+- **Personal + shared runbooks** — users upload private runbooks; admins manage the shared library
 - **Feedback loop** — 👍/👎 ratings stored in PostgreSQL for quality tracking
-- **Query audit log** — Full history of past queries with expandable responses
-- **Admin dashboard** — Upload runbooks, view indexed files, monitor feedback stats
-- **Firebase Google Auth** — One-click Google sign-in with JWT verification
+- **Analytics** — runbook health and knowledge-gap detection in the admin panel
+- **Bookmarks, query history, shareable answers, Markdown export**
+- **Firebase Google Auth** — one-click sign-in with backend JWT verification
+- **Rate limiting** — per-IP query throttling via slowapi
+
+---
+
+## 🧱 Tech Stack
+
+| Layer | Tech |
+|-------|------|
+| **Backend** | Python 3.11+, FastAPI, Uvicorn |
+| **Vector store** | FAISS (`faiss-cpu`) |
+| **Keyword store** | BM25 (`rank-bm25`) |
+| **Embeddings** | `BAAI/bge-small-en-v1.5` (sentence-transformers) |
+| **Reranker** | `BAAI/bge-reranker-base` (cross-encoder) |
+| **LLM** | Google Gemini (`gemini-2.5-flash`, with fallbacks) |
+| **Database** | Supabase (PostgreSQL) |
+| **Auth** | Firebase (Google Sign-In) — Admin SDK on the backend |
+| **Doc parsing** | PyMuPDF (PDF), python-docx (DOCX), langchain text splitters |
+| **Rate limiting** | slowapi |
+| **Frontend** | React 18, Vite, TailwindCSS, framer-motion, react-markdown, axios |
+| **Deploy** | Docker + docker-compose |
+
+---
+
+## 📁 Project Structure
+
+```
+resolveit-ai/
+├── backend/
+│   ├── main.py                # FastAPI entry (lifespan: load FAISS, warm models, build BM25)
+│   ├── core/                  # config, firebase_auth, supabase_client, gemini_client, rate_limit
+│   ├── ingestion/             # parser, chunker, indexer
+│   ├── retrieval/             # embedder, faiss_store, bm25_store, hybrid, reranker
+│   ├── rag/                   # pipeline.py, modes.py
+│   ├── routes/                # query, auth, admin, runbooks, bookmarks, history, feedback, exports
+│   ├── models/                # Pydantic request/response models
+│   ├── migrations/            # SQL migrations 001–006 (run in order)
+│   ├── sample_runbooks/       # example runbooks to seed the index
+│   ├── requirements.txt
+│   └── Dockerfile
+├── frontend/
+│   ├── src/
+│   │   ├── pages/             # Landing, Login, Register, Dashboard, AdminPanel, ...
+│   │   ├── components/        # QueryInput, ResultCard, Sidebar, CommandPalette, ...
+│   │   ├── hooks/             # useAuth, useQuery
+│   │   ├── context/           # AuthContext
+│   │   └── firebaseConfig.js
+│   ├── package.json
+│   ├── Dockerfile
+│   └── nginx.conf
+└── docker-compose.yml
+```
 
 ---
 
@@ -42,101 +119,66 @@ User → React (Firebase Google Auth) → FastAPI Backend
 - **Python 3.11+**
 - **Node.js 18+**
 - **Firebase project** with Google Auth enabled
-- **Supabase project** with the required tables
+- **Supabase project**
 - **Google Gemini API key**
 
-### 1. Clone & Setup
+### 1. Clone
 
 ```bash
 git clone <your-repo-url>
 cd resolveit-ai
 ```
 
-### 2. Supabase Database Setup
+### 2. Supabase database
 
-Create these tables in your Supabase SQL Editor:
+Run the SQL migrations in `backend/migrations/` (`001` → `006`) **in order** in the
+Supabase SQL Editor. They create the `runbooks`, `query_logs`, `feedback`, and
+`bookmarks` tables plus later columns (content hash, admin flag, thread id, mode).
 
-```sql
-CREATE TABLE runbooks (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  filename TEXT NOT NULL,
-  title TEXT,
-  category TEXT,
-  file_type TEXT,
-  uploaded_by TEXT,
-  uploaded_at TIMESTAMPTZ DEFAULT NOW(),
-  chunk_count INTEGER,
-  is_indexed BOOLEAN DEFAULT FALSE
-);
+> Auth is handled by Firebase, so `user_id` columns store Firebase UIDs as `TEXT`
+> (no foreign key to `auth.users`).
 
-CREATE TABLE query_logs (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id TEXT,
-  query_text TEXT NOT NULL,
-  retrieved_sources TEXT[],
-  llm_response TEXT,
-  confidence_score FLOAT,
-  queried_at TIMESTAMPTZ DEFAULT NOW()
-);
+### 3. Firebase
 
-CREATE TABLE feedback (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  query_log_id UUID REFERENCES query_logs(id),
-  user_id TEXT,
-  rating INTEGER CHECK (rating IN (1, -1)),
-  comment TEXT,
-  submitted_at TIMESTAMPTZ DEFAULT NOW()
-);
-```
+1. Open the [Firebase Console](https://console.firebase.google.com/) and create/select a project.
+2. Enable **Authentication → Google** sign-in.
+3. **Project Settings → Service Accounts → Generate New Private Key** → save as
+   `backend/firebase-service-account.json`.
+4. **Project Settings → General → Your apps → Web app** → copy the config into `frontend/.env`.
 
-### 3. Firebase Setup
-
-1. Go to [Firebase Console](https://console.firebase.google.com/)
-2. Create a new project (or use existing)
-3. Enable **Authentication** → **Google** sign-in provider
-4. Go to **Project Settings** → **Service Accounts** → **Generate New Private Key**
-5. Save the JSON file as `backend/firebase-service-account.json`
-6. Go to **Project Settings** → **General** → **Your apps** → **Web app**
-7. Copy the Firebase config values to `frontend/.env`
-
-### 4. Backend Setup
+### 4. Backend
 
 ```bash
 cd backend
-
-# Create virtual environment
 python -m venv venv
-venv\Scripts\activate  # Windows
-# source venv/bin/activate  # macOS/Linux
+venv\Scripts\Activate.ps1        # Windows (PowerShell)
+# source venv/bin/activate       # macOS / Linux
 
 pip install -r requirements.txt
+cp .env.example .env             # then fill in real values
 
-# Configure environment
-# Edit .env with your Supabase + Gemini credentials
-
-# Run
 uvicorn main:app --reload --port 8000
 ```
 
-### 5. Frontend Setup
+_(Optional)_ seed the index from the bundled sample runbooks:
+
+```bash
+python test_full_pipeline.py
+```
+
+### 5. Frontend
 
 ```bash
 cd frontend
-
-# Install dependencies
 npm install
-
-# Configure environment
-# Edit .env with your Firebase config
-
-# Run
+cp .env.example .env             # then fill in real values
 npm run dev
 ```
 
-### 6. Open in Browser
+### 6. Open
 
-- Frontend: http://localhost:5173
-- Backend API docs: http://localhost:8000/docs
+- Frontend → http://localhost:5173
+- Backend API docs → http://localhost:8000/docs
 
 ---
 
@@ -144,64 +186,144 @@ npm run dev
 
 ### `backend/.env`
 
-| Variable | Description |
-|---|---|
-| `SUPABASE_URL` | Your Supabase project URL |
-| `SUPABASE_ANON_KEY` | Supabase anon/public key |
-| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (for admin ops) |
-| `GEMINI_API_KEY` | Google Gemini API key |
-| `FIREBASE_CREDENTIALS_PATH` | Path to Firebase service account JSON |
-| `FAISS_INDEX_PATH` | Where to store FAISS index (default: `./faiss_index`) |
-| `ADMIN_EMAILS` | Comma-separated admin email list |
+| Variable | Required | Default | Notes |
+|----------|----------|---------|-------|
+| `SUPABASE_URL` | ✅ | — | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | ✅ | — | Service-role key (backend only — keep secret) |
+| `SUPABASE_ANON_KEY` | — | — | Optional |
+| `GEMINI_API_KEY` | ✅* | — | Without it, generation returns placeholder text |
+| `GEMINI_MODEL` | — | `gemini-2.5-flash` | Primary LLM |
+| `GEMINI_FALLBACK_MODELS` | — | `gemini-2.0-flash,gemini-2.0-flash-lite` | Comma-separated |
+| `FIREBASE_CREDENTIALS_PATH` | — | `./firebase-service-account.json` | Service-account JSON path |
+| `FAISS_INDEX_PATH` | — | `./faiss_index` | Where the index is persisted |
+| `EMBEDDING_MODEL` | — | `BAAI/bge-small-en-v1.5` | |
+| `RERANKER_MODEL` | — | `BAAI/bge-reranker-base` | |
+| `ADMIN_EMAILS` | — | — | Comma-separated; these users get admin access |
+| `CORS_ORIGINS` | — | `http://localhost:5173,http://localhost:3000` | Comma-separated |
+| `MAX_UPLOAD_MB` | — | `20` | Max runbook upload size |
+| `QUERY_RATE_LIMIT` | — | `20/minute` | slowapi limit string |
+| `QUERY_CACHE_SIZE` / `QUERY_CACHE_TTL_SECONDS` | — | `256` / `600` | Answer cache |
 
 ### `frontend/.env`
 
-| Variable | Description |
-|---|---|
-| `VITE_FIREBASE_API_KEY` | Firebase API key |
-| `VITE_FIREBASE_AUTH_DOMAIN` | Firebase auth domain |
-| `VITE_FIREBASE_PROJECT_ID` | Firebase project ID |
-| `VITE_FIREBASE_STORAGE_BUCKET` | Firebase storage bucket |
-| `VITE_FIREBASE_MESSAGING_SENDER_ID` | Firebase messaging sender ID |
-| `VITE_FIREBASE_APP_ID` | Firebase app ID |
-| `VITE_API_BASE_URL` | Backend URL (default: `http://localhost:8000`) |
+| Variable | Notes |
+|----------|-------|
+| `VITE_FIREBASE_API_KEY` | Firebase web config |
+| `VITE_FIREBASE_AUTH_DOMAIN` | |
+| `VITE_FIREBASE_PROJECT_ID` | |
+| `VITE_FIREBASE_STORAGE_BUCKET` | |
+| `VITE_FIREBASE_MESSAGING_SENDER_ID` | |
+| `VITE_FIREBASE_APP_ID` | |
+| `VITE_API_BASE_URL` | Backend URL, e.g. `http://localhost:8000` |
+
+---
+
+## 🎚️ Answer Modes
+
+The query API accepts a `mode` field that tunes retrieval depth and answer voice
+(`backend/rag/modes.py`):
+
+| Mode | HyDE | Candidates → kept | Style |
+|------|------|-------------------|-------|
+| `fast` | off | 6 → 3 | Terse, 3–5 steps |
+| `standard` | on | 12 → 5 | Balanced default |
+| `deep` | on | 20 → 8 | Adds Root Cause + Verification |
+| `eli5` | on | 12 → 5 | Beginner-friendly, explains jargon |
+| `expert` | on | 12 → 5 | Senior-SRE shorthand, commands only |
+| `dryrun` | on | 12 → 5 | Annotated commands + Rollback section |
+
+Every mode runs a **gate check** first — if no excerpt directly addresses the
+question, the assistant replies _"No relevant information in the indexed runbooks —
+please escalate to Tier-2."_ rather than inventing an answer.
 
 ---
 
 ## 📡 API Reference
 
+Interactive docs at `GET /docs`. Authenticated routes expect a Firebase ID token
+in the `Authorization: Bearer <token>` header.
+
 | Method | Endpoint | Auth | Description |
-|---|---|---|---|
-| GET | `/auth/me` | Bearer JWT | Get current user info |
-| POST | `/auth/verify` | Bearer JWT | Verify Firebase token |
-| POST | `/query` | Bearer JWT | Run RAG query |
-| GET | `/history` | Bearer JWT | Get user query history |
-| POST | `/feedback` | Bearer JWT | Submit thumbs up/down |
-| POST | `/admin/upload` | Bearer JWT (admin) | Upload + index runbook |
-| GET | `/admin/runbooks` | Bearer JWT (admin) | List all runbooks |
-| GET | `/admin/feedback-stats` | Bearer JWT (admin) | Feedback analytics |
+|--------|----------|------|-------------|
+| `GET`  | `/health` | — | FAISS vector + metadata counts |
+| `POST` | `/query` | Bearer | Run a RAG query (blocking) |
+| `POST` | `/query/stream` | Bearer | Run a RAG query (SSE streaming) |
+| `GET`  | `/answer/{query_log_id}` | Bearer | Fetch a past answer (shareable) |
+| `GET`  | `/history` | Bearer | Current user's query history |
+| `POST` | `/feedback` | Bearer | Submit 👍/👎 on an answer |
+| `GET`  | `/export/{query_log_id}.md` | Bearer | Export an answer as Markdown |
+| `POST` | `/runbooks/upload` | Bearer | Upload a personal runbook |
+| `GET`  | `/runbooks/my` | Bearer | List personal runbooks |
+| `DELETE` | `/runbooks/my/{id}` | Bearer | Delete a personal runbook |
+| `POST`/`GET`/`DELETE` | `/bookmarks` · `/bookmarks/{id}` | Bearer | Manage bookmarks |
+| `GET`/`POST` | `/auth/me` · `/auth/verify` | Bearer | Auth |
+| `POST` | `/admin/upload` | Bearer (admin) | Upload a shared runbook |
+| `GET`/`DELETE` | `/admin/runbooks` · `/admin/runbooks/{id}` | Bearer (admin) | Manage shared library |
+| `GET`  | `/admin/feedback-stats` · `/admin/runbook-health` · `/admin/knowledge-gaps` | Bearer (admin) | Analytics |
+
+---
+
+## 🖥️ Frontend Routes
+
+| Path | Page | Access |
+|------|------|--------|
+| `/` | Landing | Public |
+| `/login`, `/register` | Auth | Public |
+| `/dashboard` | Ask questions, view answers | Protected |
+| `/history` | Past queries | Protected |
+| `/my-runbooks` | Upload / manage personal runbooks | Protected |
+| `/playbook` | Saved / bookmarked answers | Protected |
+| `/answer/:id` | Shared answer view | Protected |
+| `/admin` | Admin panel (analytics, shared library) | Admin only |
 
 ---
 
 ## 🐳 Docker
 
 ```bash
-docker-compose up --build
+docker compose up --build
 ```
+
+- Backend → http://localhost:8000
+- Frontend → http://localhost:5173
+
+The compose file mounts `backend/.env`, the persisted `faiss_index/`, and the
+Firebase service-account JSON into the backend container.
+
+---
+
+## 🧪 Testing
+
+```bash
+cd backend
+pytest
+```
+
+Covers the parser, chunker, FAISS store, and reranker (`backend/tests/`).
+
+---
+
+## 🔒 Security Notes
+
+- **Never commit** `backend/.env`, `backend/firebase-service-account.json`, or any
+  Supabase service-role / Gemini key. The service-role key bypasses row-level security.
+- CORS, upload size, and a per-IP query rate limit are enforced server-side.
+- Only emails listed in `ADMIN_EMAILS` get admin privileges.
 
 ---
 
 ## 📝 Resume Bullet
 
 ```
-ResolveIT AI – RAG-based IT Runbook Assistant | Python, FAISS, FastAPI, React, Gemini  2025
-– Built a semantic retrieval system indexing multi-format runbooks (PDF/DOCX/TXT) using
-  FAISS + HuggingFace all-MiniLM-L6-v2 embeddings with section-aware chunking and
-  cross-encoder re-ranking (ms-marco-MiniLM) improving retrieval precision.
-– Implemented end-to-end RAG pipeline with Gemini 1.5 Flash summarization, generating
-  actionable resolution steps with confidence scoring and cited source attribution.
-– Deployed full-stack with React/Tailwind admin dashboard, Firebase Google authentication,
-  Supabase PostgreSQL backend, query audit logging, and a feedback loop for quality tracking.
+ResolveIT AI – RAG-based IT Runbook Assistant | Python, FastAPI, FAISS, BM25, Gemini, React  2025
+– Built a hybrid retrieval system (FAISS dense vectors + BM25) over multi-format runbooks
+  (PDF/DOCX/TXT) with section-aware chunking, HyDE query expansion, and BGE cross-encoder
+  re-ranking, plus a confidence gate that refuses low-relevance matches to prevent hallucination.
+– Implemented an end-to-end, streaming RAG pipeline on Gemini 2.5 Flash with six answer modes,
+  inline source citations, follow-up suggestions, and a TTL answer cache.
+– Shipped a full-stack React/Tailwind app with Firebase Google auth, Supabase PostgreSQL,
+  per-user runbook uploads, query audit logging, bookmarks, and admin analytics
+  (feedback stats, runbook health, knowledge-gap detection).
 ```
 
 ---
